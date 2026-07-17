@@ -8,8 +8,8 @@ const geist = Geist({
 });
 
 export const metadata: Metadata = {
-  title: "Petit suivi — Mes tâches, simplement",
-  description: "Un outil simple et sans connexion pour suivre vos tâches, responsables, dates, statuts et commentaires.",
+  title: "Petit suivi — Tâches partagées",
+  description: "Un tableau public et sans connexion pour suivre des tâches partagées avec responsables, dates, priorités, statuts et commentaires.",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
 

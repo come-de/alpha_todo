@@ -1,12 +1,15 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Status = "todo" | "progress" | "done";
+type Priority = "low" | "medium" | "high";
+type Density = "compact" | "comfortable";
 
 type Comment = {
   id: string;
   text: string;
+  author: string;
   createdAt: string;
 };
 
@@ -18,72 +21,15 @@ type Task = {
   startDate: string;
   endDate: string;
   status: Status;
+  priority: Priority;
   comments: Comment[];
   createdAt: string;
 };
 
 type TaskDraft = Omit<Task, "id" | "comments" | "createdAt">;
 
-const STORAGE_KEY = "petit-suivi-taches-v1";
-
-const initialTasks: Task[] = [
-  {
-    id: "demo-1",
-    title: "Finaliser la présentation client",
-    description: "Relire les chiffres, harmoniser les slides et préparer la version PDF.",
-    owner: "Sophie",
-    startDate: "2026-07-15",
-    endDate: "2026-07-18",
-    status: "progress",
-    comments: [
-      {
-        id: "comment-1",
-        text: "Les chiffres sont validés. Il reste la mise en forme des deux dernières slides.",
-        createdAt: "2026-07-17T09:30:00.000Z",
-      },
-    ],
-    createdAt: "2026-07-14T10:00:00.000Z",
-  },
-  {
-    id: "demo-2",
-    title: "Réserver la salle pour l’atelier",
-    description: "Salle pour 12 personnes avec écran et tableau blanc.",
-    owner: "Marc",
-    startDate: "2026-07-17",
-    endDate: "2026-07-17",
-    status: "todo",
-    comments: [],
-    createdAt: "2026-07-15T14:00:00.000Z",
-  },
-  {
-    id: "demo-3",
-    title: "Envoyer le compte rendu",
-    description: "Partager les décisions et les prochaines étapes avec toute l’équipe.",
-    owner: "Inès",
-    startDate: "2026-07-12",
-    endDate: "2026-07-14",
-    status: "done",
-    comments: [
-      {
-        id: "comment-2",
-        text: "Envoyé à toute l’équipe lundi après-midi.",
-        createdAt: "2026-07-14T15:10:00.000Z",
-      },
-    ],
-    createdAt: "2026-07-12T08:00:00.000Z",
-  },
-  {
-    id: "demo-4",
-    title: "Mettre à jour le planning éditorial",
-    description: "Ajouter les publications d’août et attribuer les relectures.",
-    owner: "Sophie",
-    startDate: "2026-07-10",
-    endDate: "2026-07-16",
-    status: "todo",
-    comments: [],
-    createdAt: "2026-07-10T08:00:00.000Z",
-  },
-];
+const AUTHOR_KEY = "petit-suivi-auteur-v2";
+const DENSITY_KEY = "petit-suivi-densite-v2";
 
 const emptyDraft: TaskDraft = {
   title: "",
@@ -92,12 +38,19 @@ const emptyDraft: TaskDraft = {
   startDate: new Date().toISOString().slice(0, 10),
   endDate: "",
   status: "todo",
+  priority: "medium",
 };
 
 const statusLabels: Record<Status, string> = {
-  todo: "À faire",
+  todo: "A faire",
   progress: "En cours",
-  done: "Terminée",
+  done: "Terminee",
+};
+
+const priorityLabels: Record<Priority, string> = {
+  low: "Basse",
+  medium: "Moyenne",
+  high: "Haute",
 };
 
 function uid(prefix: string) {
@@ -105,13 +58,23 @@ function uid(prefix: string) {
 }
 
 function dateValue(date: string) {
+  if (!date) return Number.POSITIVE_INFINITY;
   return new Date(`${date}T12:00:00`).getTime();
 }
 
-function isLate(task: Task) {
+function todayValue() {
   const today = new Date();
   today.setHours(12, 0, 0, 0);
-  return task.status !== "done" && dateValue(task.endDate || task.startDate) < today.getTime();
+  return today.getTime();
+}
+
+function daysFromToday(date: string) {
+  const day = 24 * 60 * 60 * 1000;
+  return Math.round((dateValue(date) - todayValue()) / day);
+}
+
+function isLate(task: Task) {
+  return task.status !== "done" && daysFromToday(task.endDate || task.startDate) < 0;
 }
 
 function formatDate(date: string) {
@@ -129,9 +92,22 @@ function formatFullDate(date: string) {
   }).format(new Date(`${date}T12:00:00`));
 }
 
+function naturalDateLabel(task: Task) {
+  const target = task.endDate || task.startDate;
+  const delta = daysFromToday(target);
+  const date = formatDate(target);
+
+  if (task.status === "done") return task.endDate ? `Terminee le ${date}` : `Terminee`;
+  if (delta < 0) return `En retard de ${Math.abs(delta)} j`;
+  if (delta === 0) return "Aujourd'hui";
+  if (delta === 1) return "Demain";
+  if (delta <= 7) return `Dans ${delta} jours`;
+  return date;
+}
+
 function dateLabel(task: Task) {
   if (!task.endDate || task.endDate === task.startDate) return formatDate(task.startDate);
-  return `${formatDate(task.startDate)} → ${formatDate(task.endDate)}`;
+  return `${formatDate(task.startDate)} -> ${formatDate(task.endDate)}`;
 }
 
 function ownerInitials(owner: string) {
@@ -143,13 +119,48 @@ function ownerInitials(owner: string) {
     .toUpperCase();
 }
 
+function normalizeTask(raw: Partial<Task>): Task {
+  return {
+    id: raw.id || uid("task"),
+    title: raw.title || "",
+    description: raw.description || "",
+    owner: raw.owner || "",
+    startDate: raw.startDate || new Date().toISOString().slice(0, 10),
+    endDate: raw.endDate || "",
+    status: raw.status === "progress" || raw.status === "done" ? raw.status : "todo",
+    priority:
+      raw.priority === "low" || raw.priority === "high" || raw.priority === "medium"
+        ? raw.priority
+        : "medium",
+    comments: Array.isArray(raw.comments)
+      ? raw.comments.map((comment) => ({
+          id: comment.id || uid("comment"),
+          text: comment.text || "",
+          author: comment.author || "Anonyme",
+          createdAt: comment.createdAt || new Date().toISOString(),
+        }))
+      : [],
+    createdAt: raw.createdAt || new Date().toISOString(),
+  };
+}
+
 export default function Home() {
-  const [tasks, setTasks] = useState<Task[]>(initialTasks);
-  const [hydrated, setHydrated] = useState(false);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [syncError, setSyncError] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | Status | "late">("all");
+  const [priorityFilter, setPriorityFilter] = useState<"all" | Priority>("all");
   const [ownerFilter, setOwnerFilter] = useState("all");
-  const [sort, setSort] = useState<"date" | "recent">("date");
+  const [density, setDensity] = useState<Density>(() =>
+    typeof window === "undefined" || localStorage.getItem(DENSITY_KEY) !== "comfortable"
+      ? "compact"
+      : "comfortable",
+  );
+  const [authorName, setAuthorName] = useState(() =>
+    typeof window === "undefined" ? "" : localStorage.getItem(AUTHOR_KEY) || "",
+  );
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
@@ -158,19 +169,40 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const importRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
+  const loadTasks = useCallback(async (silent = false) => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) setTasks(JSON.parse(saved));
+      if (!silent) setSyncError("");
+      const response = await fetch("/api/tasks", { cache: "no-store" });
+      if (!response.ok) throw new Error("load-failed");
+      const data = (await response.json()) as { tasks?: Partial<Task>[] };
+      setTasks(Array.isArray(data.tasks) ? data.tasks.map(normalizeTask) : []);
+      setLoaded(true);
+      setSyncError("");
     } catch {
-      // A malformed local backup should never block the app.
+      setLoaded(true);
+      setSyncError("Synchronisation indisponible pour le moment");
     }
-    setHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (hydrated) localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-  }, [tasks, hydrated]);
+    const timer = window.setTimeout(() => {
+      void loadTasks();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadTasks]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => loadTasks(true), 30000);
+    return () => window.clearInterval(timer);
+  }, [loadTasks]);
+
+  useEffect(() => {
+    if (authorName.trim()) localStorage.setItem(AUTHOR_KEY, authorName.trim());
+  }, [authorName]);
+
+  useEffect(() => {
+    localStorage.setItem(DENSITY_KEY, density);
+  }, [density]);
 
   useEffect(() => {
     if (!toast) return;
@@ -190,6 +222,7 @@ export default function Home() {
       progress: tasks.filter((task) => task.status === "progress").length,
       done: tasks.filter((task) => task.status === "done").length,
       late: tasks.filter(isLate).length,
+      high: tasks.filter((task) => task.priority === "high" && task.status !== "done").length,
     }),
     [tasks],
   );
@@ -198,23 +231,48 @@ export default function Home() {
     const normalized = query.trim().toLocaleLowerCase("fr");
     return tasks
       .filter((task) => {
+        const latestComment = task.comments[0];
         const matchesText =
           !normalized ||
-          `${task.title} ${task.description} ${task.owner}`.toLocaleLowerCase("fr").includes(normalized);
+          `${task.title} ${task.description} ${task.owner} ${latestComment?.text || ""}`
+            .toLocaleLowerCase("fr")
+            .includes(normalized);
         const matchesStatus =
           statusFilter === "all" ||
           (statusFilter === "late" ? isLate(task) : task.status === statusFilter);
         const matchesOwner = ownerFilter === "all" || task.owner === ownerFilter;
-        return matchesText && matchesStatus && matchesOwner;
+        const matchesPriority = priorityFilter === "all" || task.priority === priorityFilter;
+        return matchesText && matchesStatus && matchesOwner && matchesPriority;
       })
-      .sort((a, b) =>
-        sort === "recent"
-          ? new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          : dateValue(a.endDate || a.startDate) - dateValue(b.endDate || b.startDate),
-      );
-  }, [tasks, query, statusFilter, ownerFilter, sort]);
+      .sort((a, b) => {
+        if (a.status === "done" && b.status !== "done") return 1;
+        if (a.status !== "done" && b.status === "done") return -1;
+        return dateValue(a.endDate || a.startDate) - dateValue(b.endDate || b.startDate);
+      });
+  }, [tasks, query, statusFilter, ownerFilter, priorityFilter]);
 
   const selectedTask = tasks.find((task) => task.id === selectedId) ?? null;
+
+  async function saveSharedTasks(nextTasks: Task[], message: string) {
+    setSaving(true);
+    setSyncError("");
+    setTasks(nextTasks);
+    try {
+      const response = await fetch("/api/tasks", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tasks: nextTasks }),
+      });
+      if (!response.ok) throw new Error("save-failed");
+      await loadTasks(true);
+      setToast(message);
+    } catch {
+      setSyncError("Sauvegarde impossible, rechargez la page avant de continuer");
+      setToast("Sauvegarde impossible");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   function openNewTask() {
     setEditingId(null);
@@ -231,13 +289,14 @@ export default function Home() {
       startDate: task.startDate,
       endDate: task.endDate,
       status: task.status,
+      priority: task.priority,
     });
     setEditorOpen(true);
   }
 
-  function saveTask(event: FormEvent) {
+  async function saveTask(event: FormEvent) {
     event.preventDefault();
-    if (!draft.title.trim() || !draft.owner.trim() || !draft.startDate) return;
+    if (!draft.title.trim() || !draft.owner.trim() || !draft.startDate || saving) return;
 
     const cleanDraft = {
       ...draft,
@@ -248,50 +307,57 @@ export default function Home() {
     };
 
     if (editingId) {
-      setTasks((current) =>
-        current.map((task) => (task.id === editingId ? { ...task, ...cleanDraft } : task)),
+      await saveSharedTasks(
+        tasks.map((task) => (task.id === editingId ? { ...task, ...cleanDraft } : task)),
+        "Tache mise a jour",
       );
-      setToast("Tâche mise à jour");
     } else {
-      const newTask: Task = {
-        ...cleanDraft,
-        id: uid("task"),
-        comments: [],
-        createdAt: new Date().toISOString(),
-      };
-      setTasks((current) => [newTask, ...current]);
-      setToast("Tâche ajoutée");
+      await saveSharedTasks(
+        [
+          {
+            ...cleanDraft,
+            id: uid("task"),
+            comments: [],
+            createdAt: new Date().toISOString(),
+          },
+          ...tasks,
+        ],
+        "Tache ajoutee",
+      );
     }
     setEditorOpen(false);
   }
 
-  function changeStatus(taskId: string, status: Status) {
-    setTasks((current) => current.map((task) => (task.id === taskId ? { ...task, status } : task)));
-    setToast(`Statut : ${statusLabels[status]}`);
+  async function changeStatus(taskId: string, status: Status) {
+    await saveSharedTasks(
+      tasks.map((task) => (task.id === taskId ? { ...task, status } : task)),
+      `Statut : ${statusLabels[status]}`,
+    );
   }
 
-  function addComment(event: FormEvent) {
+  async function addComment(event: FormEvent) {
     event.preventDefault();
-    if (!selectedId || !comment.trim()) return;
+    const author = authorName.trim();
+    if (!selectedId || !comment.trim() || !author || saving) return;
     const newComment: Comment = {
       id: uid("comment"),
       text: comment.trim(),
+      author,
       createdAt: new Date().toISOString(),
     };
-    setTasks((current) =>
-      current.map((task) =>
+    await saveSharedTasks(
+      tasks.map((task) =>
         task.id === selectedId ? { ...task, comments: [newComment, ...task.comments] } : task,
       ),
+      "Commentaire ajoute",
     );
     setComment("");
-    setToast("Commentaire ajouté");
   }
 
-  function deleteTask(taskId: string) {
-    if (!window.confirm("Supprimer cette tâche ?")) return;
-    setTasks((current) => current.filter((task) => task.id !== taskId));
+  async function deleteTask(taskId: string) {
+    if (!window.confirm("Supprimer cette tache ?")) return;
+    await saveSharedTasks(tasks.filter((task) => task.id !== taskId), "Tache supprimee");
     setSelectedId(null);
-    setToast("Tâche supprimée");
   }
 
   function exportTasks() {
@@ -299,10 +365,10 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `mes-taches-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `taches-partagees-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    setToast("Sauvegarde téléchargée");
+    setToast("Sauvegarde telechargee");
   }
 
   async function importTasks(file: File | undefined) {
@@ -310,27 +376,32 @@ export default function Home() {
     try {
       const imported = JSON.parse(await file.text());
       if (!Array.isArray(imported)) throw new Error("invalid");
-      setTasks(imported);
-      setToast("Tâches importées");
+      if (!window.confirm("Remplacer toutes les taches partagees par ce fichier ?")) return;
+      await saveSharedTasks(imported.map(normalizeTask), "Taches importees");
     } catch {
-      setToast("Ce fichier n’est pas valide");
+      setToast("Ce fichier n'est pas valide");
+    } finally {
+      if (importRef.current) importRef.current.value = "";
     }
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell density-${density}`}>
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">✓</div>
           <div>
             <span>Petit suivi</span>
-            <small>Mes tâches, simplement</small>
+            <small>Taches partagees sans connexion</small>
           </div>
         </div>
         <div className="header-actions">
-          <div className="storage-note"><span aria-hidden="true">●</span> Sauvegardé sur cet appareil</div>
-          <button className="button primary" onClick={openNewTask} data-testid="new-task">
-            <span aria-hidden="true">＋</span> Nouvelle tâche
+          <div className={`storage-note ${syncError ? "error" : ""}`}>
+            <span aria-hidden="true">●</span>
+            {saving ? "Sauvegarde..." : syncError || "Synchronise en ligne"}
+          </div>
+          <button className="button primary" onClick={openNewTask} disabled={saving}>
+            <span aria-hidden="true">＋</span> Nouvelle tache
           </button>
         </div>
       </header>
@@ -338,13 +409,17 @@ export default function Home() {
       <section className="content">
         <div className="hero-row">
           <div>
-            <p className="eyebrow">Vue d’ensemble</p>
-            <h1>Bonjour, voici où en sont vos tâches.</h1>
-            <p className="hero-copy">Visualisez les priorités, mettez à jour l’avancement et gardez le contexte au même endroit.</p>
+            <p className="eyebrow">Vue partagee</p>
+            <h1>Un seul tableau pour suivre les taches de l&apos;equipe.</h1>
+            <p className="hero-copy">
+              Les modifications sont visibles par toutes les personnes qui ouvrent le site. Les priorites,
+              les retards et les derniers commentaires restent sous les yeux.
+            </p>
           </div>
           <div className="backup-menu">
-            <button className="button quiet" onClick={exportTasks} title="Télécharger une sauvegarde">⇩ Exporter</button>
-            <button className="button quiet" onClick={() => importRef.current?.click()} title="Restaurer une sauvegarde">⇧ Importer</button>
+            <button className="button quiet" onClick={() => loadTasks()} disabled={saving}>↻ Actualiser</button>
+            <button className="button quiet" onClick={exportTasks} disabled={!tasks.length}>⇩ Exporter</button>
+            <button className="button quiet" onClick={() => importRef.current?.click()} disabled={saving}>⇧ Importer</button>
             <input
               ref={importRef}
               className="sr-only"
@@ -355,52 +430,68 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="stats-grid" aria-label="Résumé des tâches">
+        <div className="stats-grid" aria-label="Resume des taches">
           <button className={`stat-card neutral ${statusFilter === "all" ? "active" : ""}`} onClick={() => setStatusFilter("all")}>
-            <span className="stat-icon">≡</span><span><strong>{stats.all}</strong><small>Toutes les tâches</small></span>
+            <span className="stat-icon">≡</span><span><strong>{stats.all}</strong><small>Toutes</small></span>
           </button>
-          <button className={`stat-card amber ${statusFilter === "todo" ? "active" : ""}`} onClick={() => setStatusFilter("todo")}>
-            <span className="stat-icon">○</span><span><strong>{stats.todo}</strong><small>À faire</small></span>
+          <button className={`stat-card red ${statusFilter === "late" ? "active" : ""}`} onClick={() => setStatusFilter("late")}>
+            <span className="stat-icon">!</span><span><strong>{stats.late}</strong><small>En retard</small></span>
+          </button>
+          <button className={`stat-card violet ${priorityFilter === "high" ? "active" : ""}`} onClick={() => setPriorityFilter(priorityFilter === "high" ? "all" : "high")}>
+            <span className="stat-icon">↑</span><span><strong>{stats.high}</strong><small>Priorite haute</small></span>
           </button>
           <button className={`stat-card blue ${statusFilter === "progress" ? "active" : ""}`} onClick={() => setStatusFilter("progress")}>
             <span className="stat-icon">◒</span><span><strong>{stats.progress}</strong><small>En cours</small></span>
           </button>
           <button className={`stat-card green ${statusFilter === "done" ? "active" : ""}`} onClick={() => setStatusFilter("done")}>
-            <span className="stat-icon">✓</span><span><strong>{stats.done}</strong><small>Terminées</small></span>
-          </button>
-          <button className={`stat-card red ${statusFilter === "late" ? "active" : ""}`} onClick={() => setStatusFilter("late")}>
-            <span className="stat-icon">!</span><span><strong>{stats.late}</strong><small>En retard</small></span>
+            <span className="stat-icon">✓</span><span><strong>{stats.done}</strong><small>Terminees</small></span>
           </button>
         </div>
 
         <section className="task-panel">
           <div className="panel-heading">
             <div>
-              <h2>Liste des tâches</h2>
-              <p>{filteredTasks.length} tâche{filteredTasks.length > 1 ? "s" : ""} affichée{filteredTasks.length > 1 ? "s" : ""}</p>
+              <h2>Liste partagee</h2>
+              <p>
+                {!loaded
+                  ? "Chargement..."
+                  : `${filteredTasks.length} tache${filteredTasks.length > 1 ? "s" : ""} affichee${filteredTasks.length > 1 ? "s" : ""}`}
+              </p>
             </div>
             <div className="filters">
               <label className="search-box">
                 <span aria-hidden="true">⌕</span>
-                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher une tâche…" aria-label="Rechercher une tâche" />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher..." aria-label="Rechercher une tache" />
               </label>
-              <select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} aria-label="Filtrer par responsable">
-                <option value="all">Tous les responsables</option>
-                {owners.map((owner) => <option key={owner} value={owner}>{owner}</option>)}
+              <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as "all" | Priority)} aria-label="Filtrer par priorite">
+                <option value="all">Toutes priorites</option>
+                <option value="high">Haute</option>
+                <option value="medium">Moyenne</option>
+                <option value="low">Basse</option>
               </select>
-              <select value={sort} onChange={(event) => setSort(event.target.value as "date" | "recent")} aria-label="Trier les tâches">
-                <option value="date">Échéance proche</option>
-                <option value="recent">Ajout récent</option>
-              </select>
+              <button className="density-toggle" onClick={() => setDensity(density === "compact" ? "comfortable" : "compact")} title="Changer la densite d'affichage">
+                {density === "compact" ? "Compact" : "Confort"}
+              </button>
             </div>
+          </div>
+
+          <div className="owner-strip" aria-label="Filtrer par responsable">
+            <button className={ownerFilter === "all" ? "active" : ""} onClick={() => setOwnerFilter("all")}>
+              Tous <span>{tasks.length}</span>
+            </button>
+            {owners.map((owner) => (
+              <button key={owner} className={ownerFilter === owner ? "active" : ""} onClick={() => setOwnerFilter(owner)}>
+                <span className="avatar">{ownerInitials(owner)}</span>{owner}
+              </button>
+            ))}
           </div>
 
           <div className="status-tabs" role="group" aria-label="Filtrer par statut">
             {([
               ["all", "Toutes"],
-              ["todo", "À faire"],
+              ["todo", "A faire"],
               ["progress", "En cours"],
-              ["done", "Terminées"],
+              ["done", "Terminees"],
               ["late", "En retard"],
             ] as const).map(([value, label]) => (
               <button key={value} className={statusFilter === value ? "active" : ""} onClick={() => setStatusFilter(value)}>{label}</button>
@@ -409,34 +500,38 @@ export default function Home() {
 
           <div className="table-wrap">
             <div className="task-table table-head" aria-hidden="true">
-              <span>Tâche</span><span>Responsable</span><span>Dates</span><span>Statut</span><span>Note en cours</span><span></span>
+              <span>Tache</span><span>Responsable</span><span>Echeance</span><span>Priorite</span><span>Statut</span><span>Dernier commentaire</span><span></span>
             </div>
-            {filteredTasks.length ? filteredTasks.map((task) => {
+            {loaded && filteredTasks.length ? filteredTasks.map((task) => {
               const latestComment = task.comments[0];
               return (
-                <article className={`task-table task-row ${isLate(task) ? "is-late" : ""}`} key={task.id}>
+                <article className={`task-table task-row priority-${task.priority} ${isLate(task) ? "is-late" : ""} ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
                   <button className="task-main" onClick={() => setSelectedId(task.id)} aria-label={`Ouvrir ${task.title}`}>
                     <span className={`completion-box ${task.status === "done" ? "checked" : ""}`} aria-hidden="true">{task.status === "done" ? "✓" : ""}</span>
                     <span><strong>{task.title}</strong><small>{task.description || "Aucune description"}</small></span>
                   </button>
                   <div className="owner"><span className="avatar">{ownerInitials(task.owner)}</span><span>{task.owner}</span></div>
-                  <div className="date-cell"><span>{dateLabel(task)}</span>{isLate(task) && <small>En retard</small>}</div>
+                  <div className="date-cell"><strong>{naturalDateLabel(task)}</strong><span>{dateLabel(task)}</span></div>
+                  <span className={`priority-pill priority-${task.priority}`}>{priorityLabels[task.priority]}</span>
                   <label className={`status-select status-${task.status}`}>
                     <span className="status-dot" aria-hidden="true"></span>
-                    <select value={task.status} onChange={(event) => changeStatus(task.id, event.target.value as Status)} aria-label={`Statut de ${task.title}`}>
-                      <option value="todo">À faire</option><option value="progress">En cours</option><option value="done">Terminée</option>
+                    <select value={task.status} onChange={(event) => changeStatus(task.id, event.target.value as Status)} aria-label={`Statut de ${task.title}`} disabled={saving}>
+                      <option value="todo">A faire</option><option value="progress">En cours</option><option value="done">Terminee</option>
                     </select>
                   </label>
                   <button className={`note-preview ${latestComment ? "has-note" : ""}`} onClick={() => setSelectedId(task.id)}>
                     <span aria-hidden="true">{latestComment ? "●" : "+"}</span>
-                    <span>{latestComment?.text || "Ajouter une note"}</span>
+                    <span>{latestComment ? `${latestComment.author} : ${latestComment.text}` : "Ajouter une note"}</span>
                   </button>
                   <button className="icon-button" onClick={() => openEditTask(task)} aria-label={`Modifier ${task.title}`}>•••</button>
                 </article>
               );
             }) : (
               <div className="empty-state">
-                <span>✓</span><h3>Aucune tâche ici</h3><p>Modifiez les filtres ou ajoutez une nouvelle tâche.</p><button className="button primary" onClick={openNewTask}>Nouvelle tâche</button>
+                <span>{loaded ? "✓" : "…"}</span>
+                <h3>{loaded ? "Aucune tache partagee" : "Chargement des taches"}</h3>
+                <p>{loaded ? "Creez la premiere tache pour demarrer le suivi collectif." : "Connexion au tableau partage..."}</p>
+                {loaded && <button className="button primary" onClick={openNewTask}>Creer la premiere tache</button>}
               </div>
             )}
           </div>
@@ -447,17 +542,18 @@ export default function Home() {
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setEditorOpen(false)}>
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
             <div className="modal-header">
-              <div><p className="eyebrow">{editingId ? "Modification" : "Nouvelle tâche"}</p><h2 id="editor-title">{editingId ? "Mettre à jour la tâche" : "Que faut-il faire ?"}</h2></div>
+              <div><p className="eyebrow">{editingId ? "Modification" : "Nouvelle tache"}</p><h2 id="editor-title">{editingId ? "Mettre a jour la tache" : "Que faut-il faire ?"}</h2></div>
               <button className="close-button" onClick={() => setEditorOpen(false)} aria-label="Fermer">×</button>
             </div>
             <form onSubmit={saveTask} className="task-form">
-              <label className="field full"><span>Tâche *</span><input autoFocus required value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Ex. Préparer la réunion mensuelle" /></label>
-              <label className="field full"><span>Description</span><textarea rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Ajoutez les informations utiles…" /></label>
-              <label className="field"><span>Responsable *</span><input required list="owners" value={draft.owner} onChange={(event) => setDraft({ ...draft, owner: event.target.value })} placeholder="Prénom ou équipe" /><datalist id="owners">{owners.map((owner) => <option key={owner} value={owner} />)}</datalist></label>
-              <label className="field"><span>Statut</span><select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as Status })}><option value="todo">À faire</option><option value="progress">En cours</option><option value="done">Terminée</option></select></label>
-              <label className="field"><span>Date de début *</span><input required type="date" value={draft.startDate} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} /></label>
+              <label className="field full"><span>Tache *</span><input autoFocus required value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Ex. Preparer la reunion mensuelle" /></label>
+              <label className="field full"><span>Description</span><textarea rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Ajoutez les informations utiles..." /></label>
+              <label className="field"><span>Responsable *</span><input required list="owners" value={draft.owner} onChange={(event) => setDraft({ ...draft, owner: event.target.value })} placeholder="Prenom ou equipe" /><datalist id="owners">{owners.map((owner) => <option key={owner} value={owner} />)}</datalist></label>
+              <label className="field"><span>Priorite</span><select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as Priority })}><option value="low">Basse</option><option value="medium">Moyenne</option><option value="high">Haute</option></select></label>
+              <label className="field"><span>Statut</span><select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as Status })}><option value="todo">A faire</option><option value="progress">En cours</option><option value="done">Terminee</option></select></label>
+              <label className="field"><span>Date de debut *</span><input required type="date" value={draft.startDate} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} /></label>
               <label className="field"><span>Date de fin <small>(facultative)</small></span><input type="date" min={draft.startDate} value={draft.endDate} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} /></label>
-              <div className="form-actions"><button type="button" className="button quiet" onClick={() => setEditorOpen(false)}>Annuler</button><button type="submit" className="button primary">{editingId ? "Enregistrer" : "Ajouter la tâche"}</button></div>
+              <div className="form-actions"><button type="button" className="button quiet" onClick={() => setEditorOpen(false)}>Annuler</button><button type="submit" className="button primary" disabled={saving}>{saving ? "Sauvegarde..." : editingId ? "Enregistrer" : "Ajouter la tache"}</button></div>
             </form>
           </section>
         </div>
@@ -467,27 +563,34 @@ export default function Home() {
         <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setSelectedId(null)}>
           <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="detail-title">
             <div className="drawer-header">
-              <span className={`status-pill status-${selectedTask.status}`}><span className="status-dot"></span>{statusLabels[selectedTask.status]}</span>
+              <div className="drawer-pills">
+                <span className={`status-pill status-${selectedTask.status}`}><span className="status-dot"></span>{statusLabels[selectedTask.status]}</span>
+                <span className={`priority-pill priority-${selectedTask.priority}`}>{priorityLabels[selectedTask.priority]}</span>
+              </div>
               <button className="close-button" onClick={() => setSelectedId(null)} aria-label="Fermer">×</button>
             </div>
             <h2 id="detail-title">{selectedTask.title}</h2>
-            <p className="detail-description">{selectedTask.description || "Aucune description ajoutée."}</p>
+            <p className="detail-description">{selectedTask.description || "Aucune description ajoutee."}</p>
             <div className="detail-grid">
               <div><small>Responsable</small><span className="owner"><span className="avatar">{ownerInitials(selectedTask.owner)}</span>{selectedTask.owner}</span></div>
-              <div><small>{selectedTask.endDate ? "Période" : "Date"}</small><strong>{formatFullDate(selectedTask.startDate)}{selectedTask.endDate && selectedTask.endDate !== selectedTask.startDate ? ` → ${formatFullDate(selectedTask.endDate)}` : ""}</strong></div>
+              <div><small>{selectedTask.endDate ? "Periode" : "Date"}</small><strong>{formatFullDate(selectedTask.startDate)}{selectedTask.endDate && selectedTask.endDate !== selectedTask.startDate ? ` -> ${formatFullDate(selectedTask.endDate)}` : ""}</strong></div>
             </div>
             <div className="quick-status">
               <span>Avancement</span>
-              <div>{(["todo", "progress", "done"] as Status[]).map((status) => <button key={status} onClick={() => changeStatus(selectedTask.id, status)} className={selectedTask.status === status ? "active" : ""}>{statusLabels[status]}</button>)}</div>
+              <div>{(["todo", "progress", "done"] as Status[]).map((status) => <button key={status} onClick={() => changeStatus(selectedTask.id, status)} className={selectedTask.status === status ? "active" : ""} disabled={saving}>{statusLabels[status]}</button>)}</div>
             </div>
             <div className="comments-section">
               <h3>Commentaires <span>{selectedTask.comments.length}</span></h3>
-              <form onSubmit={addComment} className="comment-form"><textarea rows={3} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Où en est cette tâche ? Ajoutez une note…" aria-label="Nouveau commentaire" /><button className="button primary" disabled={!comment.trim()} type="submit">Ajouter la note</button></form>
+              <form onSubmit={addComment} className="comment-form">
+                <label className="author-field"><span>Votre nom</span><input value={authorName} onChange={(event) => setAuthorName(event.target.value)} placeholder="Ex. Sophie" /></label>
+                <textarea rows={3} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Ou en est cette tache ? Ajoutez une note..." aria-label="Nouveau commentaire" />
+                <button className="button primary" disabled={!comment.trim() || !authorName.trim() || saving} type="submit">Ajouter la note</button>
+              </form>
               <div className="comment-list">
-                {selectedTask.comments.length ? selectedTask.comments.map((item) => <article className="comment" key={item.id}><span className="comment-mark">●</span><div><p>{item.text}</p><small>{new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.createdAt))}</small></div></article>) : <p className="no-comment">Aucun commentaire pour le moment.</p>}
+                {selectedTask.comments.length ? selectedTask.comments.map((item) => <article className="comment" key={item.id}><span className="comment-mark">●</span><div><p>{item.text}</p><small>{item.author} · {new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.createdAt))}</small></div></article>) : <p className="no-comment">Aucun commentaire pour le moment.</p>}
               </div>
             </div>
-            <div className="drawer-actions"><button className="button quiet" onClick={() => openEditTask(selectedTask)}>Modifier</button><button className="button danger" onClick={() => deleteTask(selectedTask.id)}>Supprimer</button></div>
+            <div className="drawer-actions"><button className="button quiet" onClick={() => openEditTask(selectedTask)}>Modifier</button><button className="button danger" onClick={() => deleteTask(selectedTask.id)} disabled={saving}>Supprimer</button></div>
           </aside>
         </div>
       )}
