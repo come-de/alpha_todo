@@ -13,20 +13,42 @@ type Comment = {
   createdAt: string;
 };
 
+type CompletionNotification = {
+  personId: string;
+  sentAt: string;
+};
+
 type Task = {
   id: string;
   title: string;
   description: string;
   owner: string;
+  assigneeId: string | null;
   startDate: string;
   endDate: string;
   status: Status;
   priority: Priority;
   comments: Comment[];
+  completionNotifications: CompletionNotification[];
   createdAt: string;
 };
 
-type TaskDraft = Omit<Task, "id" | "comments" | "createdAt">;
+type Person = {
+  id: string;
+  name: string;
+  active: boolean;
+  hasEmail: boolean;
+  createdAt: string;
+};
+
+type PersonDraft = {
+  id: string | null;
+  name: string;
+  email: string;
+  active: boolean;
+};
+
+type TaskDraft = Omit<Task, "id" | "comments" | "completionNotifications" | "createdAt">;
 
 const AUTHOR_KEY = "petit-suivi-auteur-v2";
 const DENSITY_KEY = "petit-suivi-densite-v2";
@@ -35,10 +57,18 @@ const emptyDraft: TaskDraft = {
   title: "",
   description: "",
   owner: "",
+  assigneeId: null,
   startDate: new Date().toISOString().slice(0, 10),
   endDate: "",
   status: "todo",
   priority: "medium",
+};
+
+const emptyPersonDraft: PersonDraft = {
+  id: null,
+  name: "",
+  email: "",
+  active: true,
 };
 
 const statusLabels: Record<Status, string> = {
@@ -97,7 +127,7 @@ function naturalDateLabel(task: Task) {
   const delta = daysFromToday(target);
   const date = formatDate(target);
 
-  if (task.status === "done") return task.endDate ? `Terminee le ${date}` : `Terminee`;
+  if (task.status === "done") return task.endDate ? `Terminee le ${date}` : "Terminee";
   if (delta < 0) return `En retard de ${Math.abs(delta)} j`;
   if (delta === 0) return "Aujourd'hui";
   if (delta === 1) return "Demain";
@@ -125,6 +155,7 @@ function normalizeTask(raw: Partial<Task>): Task {
     title: raw.title || "",
     description: raw.description || "",
     owner: raw.owner || "",
+    assigneeId: raw.assigneeId || null,
     startDate: raw.startDate || new Date().toISOString().slice(0, 10),
     endDate: raw.endDate || "",
     status: raw.status === "progress" || raw.status === "done" ? raw.status : "todo",
@@ -140,14 +171,32 @@ function normalizeTask(raw: Partial<Task>): Task {
           createdAt: comment.createdAt || new Date().toISOString(),
         }))
       : [],
+    completionNotifications: Array.isArray(raw.completionNotifications)
+      ? raw.completionNotifications.map((item) => ({
+          personId: item.personId,
+          sentAt: item.sentAt,
+        }))
+      : [],
+    createdAt: raw.createdAt || new Date().toISOString(),
+  };
+}
+
+function normalizePerson(raw: Partial<Person>): Person {
+  return {
+    id: raw.id || uid("person"),
+    name: raw.name || "",
+    active: raw.active !== false,
+    hasEmail: Boolean(raw.hasEmail),
     createdAt: raw.createdAt || new Date().toISOString(),
   };
 }
 
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [people, setPeople] = useState<Person[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [notifying, setNotifying] = useState(false);
   const [syncError, setSyncError] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | Status | "late">("all");
@@ -162,9 +211,14 @@ export default function Home() {
     typeof window === "undefined" ? "" : localStorage.getItem(AUTHOR_KEY) || "",
   );
   const [editorOpen, setEditorOpen] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [notifyOpen, setNotifyOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
+  const [personDraft, setPersonDraft] = useState<PersonDraft>(emptyPersonDraft);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [notifyTaskId, setNotifyTaskId] = useState<string | null>(null);
+  const [notifyRecipients, setNotifyRecipients] = useState<string[]>([]);
   const [comment, setComment] = useState("");
   const [toast, setToast] = useState("");
   const importRef = useRef<HTMLInputElement>(null);
@@ -184,17 +238,32 @@ export default function Home() {
     }
   }, []);
 
+  const loadPeople = useCallback(async () => {
+    try {
+      const response = await fetch("/api/people", { cache: "no-store" });
+      if (!response.ok) throw new Error("load-people-failed");
+      const data = (await response.json()) as { people?: Partial<Person>[] };
+      setPeople(Array.isArray(data.people) ? data.people.map(normalizePerson) : []);
+    } catch {
+      setToast("Liste des personnes indisponible");
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadTasks();
+      void loadPeople();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadTasks]);
+  }, [loadTasks, loadPeople]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => loadTasks(true), 30000);
+    const timer = window.setInterval(() => {
+      void loadTasks(true);
+      void loadPeople();
+    }, 30000);
     return () => window.clearInterval(timer);
-  }, [loadTasks]);
+  }, [loadTasks, loadPeople]);
 
   useEffect(() => {
     if (authorName.trim()) localStorage.setItem(AUTHOR_KEY, authorName.trim());
@@ -210,9 +279,18 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
+  const activePeople = useMemo(() => people.filter((person) => person.active), [people]);
+
   const owners = useMemo(
-    () => Array.from(new Set(tasks.map((task) => task.owner).filter(Boolean))).sort(),
-    [tasks],
+    () =>
+      Array.from(
+        new Set([
+          ...tasks.map((task) => task.owner).filter(Boolean),
+          ...people.map((person) => person.name).filter(Boolean),
+        ]),
+      ).sort(),
+    [tasks, people],
   );
 
   const stats = useMemo(
@@ -232,15 +310,16 @@ export default function Home() {
     return tasks
       .filter((task) => {
         const latestComment = task.comments[0];
+        const assignee = task.assigneeId ? peopleById.get(task.assigneeId)?.name || "" : "";
         const matchesText =
           !normalized ||
-          `${task.title} ${task.description} ${task.owner} ${latestComment?.text || ""}`
+          `${task.title} ${task.description} ${task.owner} ${assignee} ${latestComment?.text || ""}`
             .toLocaleLowerCase("fr")
             .includes(normalized);
         const matchesStatus =
           statusFilter === "all" ||
           (statusFilter === "late" ? isLate(task) : task.status === statusFilter);
-        const matchesOwner = ownerFilter === "all" || task.owner === ownerFilter;
+        const matchesOwner = ownerFilter === "all" || task.owner === ownerFilter || assignee === ownerFilter;
         const matchesPriority = priorityFilter === "all" || task.priority === priorityFilter;
         return matchesText && matchesStatus && matchesOwner && matchesPriority;
       })
@@ -249,11 +328,13 @@ export default function Home() {
         if (a.status !== "done" && b.status === "done") return -1;
         return dateValue(a.endDate || a.startDate) - dateValue(b.endDate || b.startDate);
       });
-  }, [tasks, query, statusFilter, ownerFilter, priorityFilter]);
+  }, [tasks, query, statusFilter, ownerFilter, priorityFilter, peopleById]);
 
   const selectedTask = tasks.find((task) => task.id === selectedId) ?? null;
+  const notifyTask = tasks.find((task) => task.id === notifyTaskId) ?? null;
+  const notifiablePeople = people.filter((person) => person.active);
 
-  async function saveSharedTasks(nextTasks: Task[], message: string) {
+  async function saveSharedTasks(nextTasks: Task[], message: string, notifyAssignments = true) {
     setSaving(true);
     setSyncError("");
     setTasks(nextTasks);
@@ -261,7 +342,7 @@ export default function Home() {
       const response = await fetch("/api/tasks", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tasks: nextTasks }),
+        body: JSON.stringify({ tasks: nextTasks, notifyAssignments }),
       });
       if (!response.ok) throw new Error("save-failed");
       await loadTasks(true);
@@ -269,6 +350,25 @@ export default function Home() {
     } catch {
       setSyncError("Sauvegarde impossible, rechargez la page avant de continuer");
       setToast("Sauvegarde impossible");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function savePeople(nextPeople: PersonDraft[], message: string) {
+    setSaving(true);
+    try {
+      const response = await fetch("/api/people", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ people: nextPeople }),
+      });
+      if (!response.ok) throw new Error("save-people-failed");
+      const data = (await response.json()) as { people?: Partial<Person>[] };
+      setPeople(Array.isArray(data.people) ? data.people.map(normalizePerson) : []);
+      setToast(message);
+    } catch {
+      setToast("Personnes non sauvegardees");
     } finally {
       setSaving(false);
     }
@@ -286,12 +386,22 @@ export default function Home() {
       title: task.title,
       description: task.description,
       owner: task.owner,
+      assigneeId: task.assigneeId,
       startDate: task.startDate,
       endDate: task.endDate,
       status: task.status,
       priority: task.priority,
     });
     setEditorOpen(true);
+  }
+
+  function selectAssignee(personId: string) {
+    const person = peopleById.get(personId);
+    setDraft({
+      ...draft,
+      assigneeId: person?.id || null,
+      owner: person?.name || draft.owner,
+    });
   }
 
   async function saveTask(event: FormEvent) {
@@ -318,6 +428,7 @@ export default function Home() {
             ...cleanDraft,
             id: uid("task"),
             comments: [],
+            completionNotifications: [],
             createdAt: new Date().toISOString(),
           },
           ...tasks,
@@ -332,6 +443,7 @@ export default function Home() {
     await saveSharedTasks(
       tasks.map((task) => (task.id === taskId ? { ...task, status } : task)),
       `Statut : ${statusLabels[status]}`,
+      false,
     );
   }
 
@@ -350,14 +462,69 @@ export default function Home() {
         task.id === selectedId ? { ...task, comments: [newComment, ...task.comments] } : task,
       ),
       "Commentaire ajoute",
+      false,
     );
     setComment("");
   }
 
   async function deleteTask(taskId: string) {
     if (!window.confirm("Supprimer cette tache ?")) return;
-    await saveSharedTasks(tasks.filter((task) => task.id !== taskId), "Tache supprimee");
+    await saveSharedTasks(tasks.filter((task) => task.id !== taskId), "Tache supprimee", false);
     setSelectedId(null);
+  }
+
+  function openPerson(person?: Person) {
+    setPersonDraft(
+      person
+        ? { id: person.id, name: person.name, email: "", active: person.active }
+        : emptyPersonDraft,
+    );
+    setPeopleOpen(true);
+  }
+
+  async function savePerson(event: FormEvent) {
+    event.preventDefault();
+    if (!personDraft.name.trim()) return;
+    const nextPerson: PersonDraft = {
+      ...personDraft,
+      id: personDraft.id || uid("person"),
+      name: personDraft.name.trim(),
+      email: personDraft.email.trim(),
+    };
+    const otherPeople = people
+      .filter((person) => person.id !== nextPerson.id)
+      .map((person) => ({ ...person, email: "" }));
+    await savePeople([...otherPeople, nextPerson], "Personne sauvegardee");
+    setPersonDraft(emptyPersonDraft);
+  }
+
+  function openCompletionNotice(task: Task) {
+    setNotifyTaskId(task.id);
+    setNotifyRecipients([]);
+    setNotifyOpen(true);
+  }
+
+  async function sendCompletionNotice(event: FormEvent) {
+    event.preventDefault();
+    if (!notifyTask || !notifyRecipients.length) return;
+    setNotifying(true);
+    try {
+      const response = await fetch(`/api/tasks/${notifyTask.id}/notify-completion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ personIds: notifyRecipients }),
+      });
+      if (!response.ok) throw new Error("notify-failed");
+      const data = (await response.json()) as { sent?: number; tasks?: Partial<Task>[] };
+      if (Array.isArray(data.tasks)) setTasks(data.tasks.map(normalizeTask));
+      setToast(`${data.sent || 0} email(s) envoye(s)`);
+      setNotifyOpen(false);
+      setNotifyRecipients([]);
+    } catch {
+      setToast("Notification impossible");
+    } finally {
+      setNotifying(false);
+    }
   }
 
   function exportTasks() {
@@ -377,7 +544,7 @@ export default function Home() {
       const imported = JSON.parse(await file.text());
       if (!Array.isArray(imported)) throw new Error("invalid");
       if (!window.confirm("Remplacer toutes les taches partagees par ce fichier ?")) return;
-      await saveSharedTasks(imported.map(normalizeTask), "Taches importees");
+      await saveSharedTasks(imported.map(normalizeTask), "Taches importees", false);
     } catch {
       setToast("Ce fichier n'est pas valide");
     } finally {
@@ -400,6 +567,9 @@ export default function Home() {
             <span aria-hidden="true">●</span>
             {saving ? "Sauvegarde..." : syncError || "Synchronise en ligne"}
           </div>
+          <button className="button quiet" onClick={() => openPerson()} disabled={saving}>
+            Personnes
+          </button>
           <button className="button primary" onClick={openNewTask} disabled={saving}>
             <span aria-hidden="true">＋</span> Nouvelle tache
           </button>
@@ -412,12 +582,12 @@ export default function Home() {
             <p className="eyebrow">Vue partagee</p>
             <h1>Un seul tableau pour suivre les taches de l&apos;equipe.</h1>
             <p className="hero-copy">
-              Les modifications sont visibles par toutes les personnes qui ouvrent le site. Les priorites,
-              les retards et les derniers commentaires restent sous les yeux.
+              Les personnes peuvent etre notifiees a l&apos;assignation et quand une tache terminee
+              doit etre partagee. Les emails restent masques dans l&apos;interface.
             </p>
           </div>
           <div className="backup-menu">
-            <button className="button quiet" onClick={() => loadTasks()} disabled={saving}>↻ Actualiser</button>
+            <button className="button quiet" onClick={() => { void loadTasks(); void loadPeople(); }} disabled={saving}>↻ Actualiser</button>
             <button className="button quiet" onClick={exportTasks} disabled={!tasks.length}>⇩ Exporter</button>
             <button className="button quiet" onClick={() => importRef.current?.click()} disabled={saving}>⇧ Importer</button>
             <input
@@ -504,13 +674,14 @@ export default function Home() {
             </div>
             {loaded && filteredTasks.length ? filteredTasks.map((task) => {
               const latestComment = task.comments[0];
+              const assignee = task.assigneeId ? peopleById.get(task.assigneeId) : null;
               return (
                 <article className={`task-table task-row priority-${task.priority} ${isLate(task) ? "is-late" : ""} ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
                   <button className="task-main" onClick={() => setSelectedId(task.id)} aria-label={`Ouvrir ${task.title}`}>
                     <span className={`completion-box ${task.status === "done" ? "checked" : ""}`} aria-hidden="true">{task.status === "done" ? "✓" : ""}</span>
                     <span><strong>{task.title}</strong><small>{task.description || "Aucune description"}</small></span>
                   </button>
-                  <div className="owner"><span className="avatar">{ownerInitials(task.owner)}</span><span>{task.owner}</span></div>
+                  <div className="owner"><span className="avatar">{ownerInitials(assignee?.name || task.owner)}</span><span>{assignee?.name || task.owner}</span></div>
                   <div className="date-cell"><strong>{naturalDateLabel(task)}</strong><span>{dateLabel(task)}</span></div>
                   <span className={`priority-pill priority-${task.priority}`}>{priorityLabels[task.priority]}</span>
                   <label className={`status-select status-${task.status}`}>
@@ -548,13 +719,45 @@ export default function Home() {
             <form onSubmit={saveTask} className="task-form">
               <label className="field full"><span>Tache *</span><input autoFocus required value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Ex. Preparer la reunion mensuelle" /></label>
               <label className="field full"><span>Description</span><textarea rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Ajoutez les informations utiles..." /></label>
-              <label className="field"><span>Responsable *</span><input required list="owners" value={draft.owner} onChange={(event) => setDraft({ ...draft, owner: event.target.value })} placeholder="Prenom ou equipe" /><datalist id="owners">{owners.map((owner) => <option key={owner} value={owner} />)}</datalist></label>
+              <label className="field">
+                <span>Assigner a une personne</span>
+                <select value={draft.assigneeId || ""} onChange={(event) => selectAssignee(event.target.value)}>
+                  <option value="">Aucune personne enregistree</option>
+                  {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}{person.hasEmail ? " - email enregistre" : " - sans email"}</option>)}
+                </select>
+              </label>
+              <label className="field"><span>Responsable *</span><input required list="owners" value={draft.owner} onChange={(event) => setDraft({ ...draft, owner: event.target.value, assigneeId: null })} placeholder="Prenom ou equipe" /><datalist id="owners">{owners.map((owner) => <option key={owner} value={owner} />)}</datalist></label>
               <label className="field"><span>Priorite</span><select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as Priority })}><option value="low">Basse</option><option value="medium">Moyenne</option><option value="high">Haute</option></select></label>
               <label className="field"><span>Statut</span><select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as Status })}><option value="todo">A faire</option><option value="progress">En cours</option><option value="done">Terminee</option></select></label>
               <label className="field"><span>Date de debut *</span><input required type="date" value={draft.startDate} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} /></label>
               <label className="field"><span>Date de fin <small>(facultative)</small></span><input type="date" min={draft.startDate} value={draft.endDate} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} /></label>
               <div className="form-actions"><button type="button" className="button quiet" onClick={() => setEditorOpen(false)}>Annuler</button><button type="submit" className="button primary" disabled={saving}>{saving ? "Sauvegarde..." : editingId ? "Enregistrer" : "Ajouter la tache"}</button></div>
             </form>
+          </section>
+        </div>
+      )}
+
+      {peopleOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setPeopleOpen(false)}>
+          <section className="modal people-modal" role="dialog" aria-modal="true" aria-labelledby="people-title">
+            <div className="modal-header">
+              <div><p className="eyebrow">Equipe</p><h2 id="people-title">Personnes et notifications</h2></div>
+              <button className="close-button" onClick={() => setPeopleOpen(false)} aria-label="Fermer">×</button>
+            </div>
+            <form onSubmit={savePerson} className="task-form people-form">
+              <label className="field"><span>Nom *</span><input required value={personDraft.name} onChange={(event) => setPersonDraft({ ...personDraft, name: event.target.value })} placeholder="Ex. Sophie" /></label>
+              <label className="field"><span>Email masque</span><input type="email" value={personDraft.email} onChange={(event) => setPersonDraft({ ...personDraft, email: event.target.value })} placeholder={personDraft.id ? "Laisser vide pour conserver" : "exemple@domaine.fr"} /></label>
+              <label className="field checkbox-field"><input type="checkbox" checked={personDraft.active} onChange={(event) => setPersonDraft({ ...personDraft, active: event.target.checked })} /><span>Personne active</span></label>
+              <div className="form-actions"><button type="button" className="button quiet" onClick={() => setPersonDraft(emptyPersonDraft)}>Nouveau</button><button type="submit" className="button primary" disabled={saving}>Sauvegarder</button></div>
+            </form>
+            <div className="people-list">
+              {people.length ? people.map((person) => (
+                <button className="person-row" key={person.id} onClick={() => openPerson(person)}>
+                  <span className="avatar">{ownerInitials(person.name)}</span>
+                  <span><strong>{person.name}</strong><small>{person.active ? "Active" : "Inactive"} · {person.hasEmail ? "email enregistre" : "email manquant"}</small></span>
+                </button>
+              )) : <p className="no-comment people-empty">Aucune personne enregistree.</p>}
+            </div>
           </section>
         </div>
       )}
@@ -572,13 +775,23 @@ export default function Home() {
             <h2 id="detail-title">{selectedTask.title}</h2>
             <p className="detail-description">{selectedTask.description || "Aucune description ajoutee."}</p>
             <div className="detail-grid">
-              <div><small>Responsable</small><span className="owner"><span className="avatar">{ownerInitials(selectedTask.owner)}</span>{selectedTask.owner}</span></div>
+              <div><small>Responsable</small><span className="owner"><span className="avatar">{ownerInitials(peopleById.get(selectedTask.assigneeId || "")?.name || selectedTask.owner)}</span>{peopleById.get(selectedTask.assigneeId || "")?.name || selectedTask.owner}</span></div>
               <div><small>{selectedTask.endDate ? "Periode" : "Date"}</small><strong>{formatFullDate(selectedTask.startDate)}{selectedTask.endDate && selectedTask.endDate !== selectedTask.startDate ? ` -> ${formatFullDate(selectedTask.endDate)}` : ""}</strong></div>
             </div>
             <div className="quick-status">
               <span>Avancement</span>
               <div>{(["todo", "progress", "done"] as Status[]).map((status) => <button key={status} onClick={() => changeStatus(selectedTask.id, status)} className={selectedTask.status === status ? "active" : ""} disabled={saving}>{statusLabels[status]}</button>)}</div>
             </div>
+            {selectedTask.status === "done" && (
+              <div className="completion-box-panel">
+                <button className="button primary" onClick={() => openCompletionNotice(selectedTask)}>Notifier la fin</button>
+                <p>
+                  {selectedTask.completionNotifications.length
+                    ? `${selectedTask.completionNotifications.length} notification(s) deja envoyee(s).`
+                    : "Aucune notification de fin envoyee."}
+                </p>
+              </div>
+            )}
             <div className="comments-section">
               <h3>Commentaires <span>{selectedTask.comments.length}</span></h3>
               <form onSubmit={addComment} className="comment-form">
@@ -592,6 +805,44 @@ export default function Home() {
             </div>
             <div className="drawer-actions"><button className="button quiet" onClick={() => openEditTask(selectedTask)}>Modifier</button><button className="button danger" onClick={() => deleteTask(selectedTask.id)} disabled={saving}>Supprimer</button></div>
           </aside>
+        </div>
+      )}
+
+      {notifyOpen && notifyTask && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setNotifyOpen(false)}>
+          <section className="modal notify-modal" role="dialog" aria-modal="true" aria-labelledby="notify-title">
+            <div className="modal-header">
+              <div><p className="eyebrow">Tache terminee</p><h2 id="notify-title">Notifier la fin</h2></div>
+              <button className="close-button" onClick={() => setNotifyOpen(false)} aria-label="Fermer">×</button>
+            </div>
+            <form onSubmit={sendCompletionNotice} className="notify-form">
+              <p className="detail-description">Selectionnez les personnes qui doivent recevoir un email pour “{notifyTask.title}”.</p>
+              <div className="recipient-list">
+                {notifiablePeople.length ? notifiablePeople.map((person) => {
+                  const alreadyNotified = notifyTask.completionNotifications.some((item) => item.personId === person.id);
+                  return (
+                    <label className={`recipient-row ${!person.hasEmail ? "disabled" : ""}`} key={person.id}>
+                      <input
+                        type="checkbox"
+                        disabled={!person.hasEmail}
+                        checked={notifyRecipients.includes(person.id)}
+                        onChange={(event) => {
+                          setNotifyRecipients((current) =>
+                            event.target.checked
+                              ? [...current, person.id]
+                              : current.filter((id) => id !== person.id),
+                          );
+                        }}
+                      />
+                      <span className="avatar">{ownerInitials(person.name)}</span>
+                      <span><strong>{person.name}</strong><small>{person.hasEmail ? "email enregistre" : "email manquant"}{alreadyNotified ? " · deja notifie" : ""}</small></span>
+                    </label>
+                  );
+                }) : <p className="no-comment">Ajoutez d&apos;abord des personnes.</p>}
+              </div>
+              <div className="form-actions"><button type="button" className="button quiet" onClick={() => setNotifyOpen(false)}>Annuler</button><button type="submit" className="button primary" disabled={!notifyRecipients.length || notifying}>{notifying ? "Envoi..." : "Envoyer"}</button></div>
+            </form>
+          </section>
         </div>
       )}
 
