@@ -5,6 +5,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 type Status = "todo" | "progress" | "done";
 type Priority = "low" | "medium" | "high";
 type Density = "compact" | "comfortable";
+type ViewMode = "list" | "matrix";
+type DurationBucket = "short" | "medium" | "long" | "unset";
 
 type Comment = {
   id: string;
@@ -26,6 +28,7 @@ type Task = {
   assigneeId: string | null;
   startDate: string;
   endDate: string;
+  estimatedHours: number | null;
   status: Status;
   priority: Priority;
   comments: Comment[];
@@ -60,6 +63,7 @@ const emptyDraft: TaskDraft = {
   assigneeId: null,
   startDate: new Date().toISOString().slice(0, 10),
   endDate: "",
+  estimatedHours: null,
   status: "todo",
   priority: "medium",
 };
@@ -82,6 +86,21 @@ const priorityLabels: Record<Priority, string> = {
   medium: "Moyenne",
   high: "Haute",
 };
+
+const priorityRank: Record<Priority, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
+const matrixPriorities: Priority[] = ["high", "medium", "low"];
+
+const durationBuckets: { value: DurationBucket; label: string; hint: string }[] = [
+  { value: "short", label: "Courte", hint: "≤ 1 h" },
+  { value: "medium", label: "Moyenne", hint: "1 h à 4 h" },
+  { value: "long", label: "Longue", hint: "> 4 h" },
+  { value: "unset", label: "Sans durée", hint: "à préciser" },
+];
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -135,6 +154,22 @@ function naturalDateLabel(task: Task) {
   return date;
 }
 
+function formatDuration(hours: number | null) {
+  if (!hours) return "Non renseignee";
+  const totalMinutes = Math.round(hours * 60);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const wholeHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes ? `${wholeHours} h ${minutes} min` : `${wholeHours} h`;
+}
+
+function durationBucket(hours: number | null): DurationBucket {
+  if (!hours) return "unset";
+  if (hours <= 1) return "short";
+  if (hours <= 4) return "medium";
+  return "long";
+}
+
 function dateLabel(task: Task) {
   if (!task.endDate || task.endDate === task.startDate) return formatDate(task.startDate);
   return `${formatDate(task.startDate)} -> ${formatDate(task.endDate)}`;
@@ -158,6 +193,10 @@ function normalizeTask(raw: Partial<Task>): Task {
     assigneeId: raw.assigneeId || null,
     startDate: raw.startDate || new Date().toISOString().slice(0, 10),
     endDate: raw.endDate || "",
+    estimatedHours:
+      typeof raw.estimatedHours === "number" && Number.isFinite(raw.estimatedHours) && raw.estimatedHours > 0
+        ? raw.estimatedHours
+        : null,
     status: raw.status === "progress" || raw.status === "done" ? raw.status : "todo",
     priority:
       raw.priority === "low" || raw.priority === "high" || raw.priority === "medium"
@@ -202,6 +241,7 @@ export default function Home() {
   const [statusFilter, setStatusFilter] = useState<"all" | Status | "late">("all");
   const [priorityFilter, setPriorityFilter] = useState<"all" | Priority>("all");
   const [ownerFilter, setOwnerFilter] = useState("all");
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [density, setDensity] = useState<Density>(() =>
     typeof window === "undefined" || localStorage.getItem(DENSITY_KEY) !== "comfortable"
       ? "compact"
@@ -215,6 +255,7 @@ export default function Home() {
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
+  const [sendAssignmentEmail, setSendAssignmentEmail] = useState(true);
   const [personDraft, setPersonDraft] = useState<PersonDraft>(emptyPersonDraft);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [notifyTaskId, setNotifyTaskId] = useState<string | null>(null);
@@ -296,6 +337,7 @@ export default function Home() {
   const stats = useMemo(
     () => ({
       all: tasks.length,
+      active: tasks.filter((task) => task.status !== "done").length,
       todo: tasks.filter((task) => task.status === "todo").length,
       progress: tasks.filter((task) => task.status === "progress").length,
       done: tasks.filter((task) => task.status === "done").length,
@@ -317,8 +359,11 @@ export default function Home() {
             .toLocaleLowerCase("fr")
             .includes(normalized);
         const matchesStatus =
-          statusFilter === "all" ||
-          (statusFilter === "late" ? isLate(task) : task.status === statusFilter);
+          statusFilter === "all"
+            ? task.status !== "done"
+            : statusFilter === "late"
+              ? isLate(task)
+              : task.status === statusFilter;
         const matchesOwner = ownerFilter === "all" || task.owner === ownerFilter || assignee === ownerFilter;
         const matchesPriority = priorityFilter === "all" || task.priority === priorityFilter;
         return matchesText && matchesStatus && matchesOwner && matchesPriority;
@@ -326,6 +371,9 @@ export default function Home() {
       .sort((a, b) => {
         if (a.status === "done" && b.status !== "done") return 1;
         if (a.status !== "done" && b.status === "done") return -1;
+        if (priorityRank[a.priority] !== priorityRank[b.priority]) {
+          return priorityRank[a.priority] - priorityRank[b.priority];
+        }
         return dateValue(a.endDate || a.startDate) - dateValue(b.endDate || b.startDate);
       });
   }, [tasks, query, statusFilter, ownerFilter, priorityFilter, peopleById]);
@@ -333,6 +381,9 @@ export default function Home() {
   const selectedTask = tasks.find((task) => task.id === selectedId) ?? null;
   const notifyTask = tasks.find((task) => task.id === notifyTaskId) ?? null;
   const notifiablePeople = people.filter((person) => person.active);
+  const draftAssignee = draft.assigneeId ? peopleById.get(draft.assigneeId) : null;
+  const editingTask = editingId ? tasks.find((task) => task.id === editingId) ?? null : null;
+  const assignmentChanged = Boolean(draft.assigneeId && draft.assigneeId !== editingTask?.assigneeId);
 
   async function saveSharedTasks(nextTasks: Task[], message: string, notifyAssignments = true) {
     setSaving(true);
@@ -342,7 +393,7 @@ export default function Home() {
       const response = await fetch("/api/tasks", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tasks: nextTasks, notifyAssignments }),
+        body: JSON.stringify({ tasks: nextTasks, notifyAssignments, sendAssignmentEmail: notifyAssignments }),
       });
       if (!response.ok) throw new Error("save-failed");
       await loadTasks(true);
@@ -377,6 +428,7 @@ export default function Home() {
   function openNewTask() {
     setEditingId(null);
     setDraft({ ...emptyDraft, startDate: new Date().toISOString().slice(0, 10) });
+    setSendAssignmentEmail(true);
     setEditorOpen(true);
   }
 
@@ -389,9 +441,11 @@ export default function Home() {
       assigneeId: task.assigneeId,
       startDate: task.startDate,
       endDate: task.endDate,
+      estimatedHours: task.estimatedHours,
       status: task.status,
       priority: task.priority,
     });
+    setSendAssignmentEmail(true);
     setEditorOpen(true);
   }
 
@@ -402,6 +456,7 @@ export default function Home() {
       assigneeId: person?.id || null,
       owner: person?.name || draft.owner,
     });
+    setSendAssignmentEmail(Boolean(person?.hasEmail));
   }
 
   async function saveTask(event: FormEvent) {
@@ -413,13 +468,19 @@ export default function Home() {
       title: draft.title.trim(),
       description: draft.description.trim(),
       owner: draft.owner.trim(),
+      estimatedHours:
+        typeof draft.estimatedHours === "number" && Number.isFinite(draft.estimatedHours) && draft.estimatedHours > 0
+          ? draft.estimatedHours
+          : null,
       endDate: draft.endDate && draft.endDate < draft.startDate ? draft.startDate : draft.endDate,
     };
+    const shouldSendAssignmentEmail = Boolean(sendAssignmentEmail && draftAssignee?.hasEmail && assignmentChanged);
 
     if (editingId) {
       await saveSharedTasks(
         tasks.map((task) => (task.id === editingId ? { ...task, ...cleanDraft } : task)),
         "Tache mise a jour",
+        shouldSendAssignmentEmail,
       );
     } else {
       await saveSharedTasks(
@@ -434,6 +495,7 @@ export default function Home() {
           ...tasks,
         ],
         "Tache ajoutee",
+        shouldSendAssignmentEmail,
       );
     }
     setEditorOpen(false);
@@ -602,7 +664,7 @@ export default function Home() {
 
         <div className="stats-grid" aria-label="Resume des taches">
           <button className={`stat-card neutral ${statusFilter === "all" ? "active" : ""}`} onClick={() => setStatusFilter("all")}>
-            <span className="stat-icon">≡</span><span><strong>{stats.all}</strong><small>Toutes</small></span>
+            <span className="stat-icon">≡</span><span><strong>{stats.active}</strong><small>Actives</small></span>
           </button>
           <button className={`stat-card red ${statusFilter === "late" ? "active" : ""}`} onClick={() => setStatusFilter("late")}>
             <span className="stat-icon">!</span><span><strong>{stats.late}</strong><small>En retard</small></span>
@@ -658,7 +720,7 @@ export default function Home() {
 
           <div className="status-tabs" role="group" aria-label="Filtrer par statut">
             {([
-              ["all", "Toutes"],
+              ["all", "Actives"],
               ["todo", "A faire"],
               ["progress", "En cours"],
               ["done", "Terminees"],
@@ -668,9 +730,59 @@ export default function Home() {
             ))}
           </div>
 
+          <div className="view-tabs" role="group" aria-label="Changer de vue">
+            <button className={viewMode === "list" ? "active" : ""} onClick={() => setViewMode("list")}>Liste</button>
+            <button className={viewMode === "matrix" ? "active" : ""} onClick={() => setViewMode("matrix")}>Priorite × duree</button>
+          </div>
+
+          {viewMode === "matrix" ? (
+            <div className="matrix-view">
+              <div className="matrix-head" aria-hidden="true">
+                <span></span>
+                {durationBuckets.map((bucket) => (
+                  <strong key={bucket.value}>{bucket.label}<small>{bucket.hint}</small></strong>
+                ))}
+              </div>
+              {matrixPriorities.map((priority) => (
+                <section className={`matrix-row matrix-priority-${priority}`} key={priority}>
+                  <div className="matrix-priority-label">
+                    <span className={`priority-pill priority-${priority}`}>{priorityLabels[priority]}</span>
+                  </div>
+                  {durationBuckets.map((bucket) => {
+                    const bucketTasks = filteredTasks.filter(
+                      (task) => task.priority === priority && durationBucket(task.estimatedHours) === bucket.value,
+                    );
+                    return (
+                      <div className="matrix-cell" key={bucket.value}>
+                        <div className="matrix-mobile-label">{bucket.label} · {bucket.hint}</div>
+                        {bucketTasks.length ? bucketTasks.map((task) => {
+                          const assignee = task.assigneeId ? peopleById.get(task.assigneeId) : null;
+                          return (
+                            <button className={`matrix-card ${isLate(task) ? "is-late" : ""}`} key={task.id} onClick={() => setSelectedId(task.id)}>
+                              <strong>{task.title}</strong>
+                              <span>{assignee?.name || task.owner} · {formatDuration(task.estimatedHours)}</span>
+                              <small>{naturalDateLabel(task)}</small>
+                            </button>
+                          );
+                        }) : <span className="matrix-empty">—</span>}
+                      </div>
+                    );
+                  })}
+                </section>
+              ))}
+              {loaded && !filteredTasks.length && (
+                <div className="empty-state matrix-empty-state">
+                  <span>✓</span>
+                  <h3>Aucune tache a afficher</h3>
+                  <p>Creez une tache ou changez les filtres pour remplir la matrice.</p>
+                  <button className="button primary" onClick={openNewTask}>Creer une tache</button>
+                </div>
+              )}
+            </div>
+          ) : (
           <div className="table-wrap">
             <div className="task-table table-head" aria-hidden="true">
-              <span>Tache</span><span>Responsable</span><span>Echeance</span><span>Priorite</span><span>Statut</span><span>Dernier commentaire</span><span></span>
+              <span>Tache</span><span>Responsable</span><span>Echeance</span><span>Duree</span><span>Priorite</span><span>Statut</span><span>Dernier commentaire</span><span></span>
             </div>
             {loaded && filteredTasks.length ? filteredTasks.map((task) => {
               const latestComment = task.comments[0];
@@ -683,6 +795,7 @@ export default function Home() {
                   </button>
                   <div className="owner"><span className="avatar">{ownerInitials(assignee?.name || task.owner)}</span><span>{assignee?.name || task.owner}</span></div>
                   <div className="date-cell"><strong>{naturalDateLabel(task)}</strong><span>{dateLabel(task)}</span></div>
+                  <span className="duration-pill">{formatDuration(task.estimatedHours)}</span>
                   <span className={`priority-pill priority-${task.priority}`}>{priorityLabels[task.priority]}</span>
                   <label className={`status-select status-${task.status}`}>
                     <span className="status-dot" aria-hidden="true"></span>
@@ -706,6 +819,7 @@ export default function Home() {
               </div>
             )}
           </div>
+          )}
         </section>
       </section>
 
@@ -729,8 +843,24 @@ export default function Home() {
               <label className="field"><span>Responsable *</span><input required list="owners" value={draft.owner} onChange={(event) => setDraft({ ...draft, owner: event.target.value, assigneeId: null })} placeholder="Prenom ou equipe" /><datalist id="owners">{owners.map((owner) => <option key={owner} value={owner} />)}</datalist></label>
               <label className="field"><span>Priorite</span><select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as Priority })}><option value="low">Basse</option><option value="medium">Moyenne</option><option value="high">Haute</option></select></label>
               <label className="field"><span>Statut</span><select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as Status })}><option value="todo">A faire</option><option value="progress">En cours</option><option value="done">Terminee</option></select></label>
+              <label className="field"><span>Duree estimee <small>(heures)</small></span><input type="number" min="0" step="0.25" value={draft.estimatedHours ?? ""} onChange={(event) => setDraft({ ...draft, estimatedHours: event.target.value ? Number(event.target.value) : null })} placeholder="Ex. 2.5" /></label>
               <label className="field"><span>Date de debut *</span><input required type="date" value={draft.startDate} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} /></label>
               <label className="field"><span>Date de fin <small>(facultative)</small></span><input type="date" min={draft.startDate} value={draft.endDate} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} /></label>
+              {draft.assigneeId && (
+                <label className="field checkbox-field assignment-email-field">
+                  <input type="checkbox" checked={sendAssignmentEmail} disabled={!draftAssignee?.hasEmail || !assignmentChanged} onChange={(event) => setSendAssignmentEmail(event.target.checked)} />
+                  <span>
+                    Envoyer un email d&apos;assignation
+                    <small>
+                      {!draftAssignee?.hasEmail
+                        ? "pas d'email enregistre"
+                        : assignmentChanged
+                          ? "email enregistre"
+                          : "assignation inchangee : aucun nouvel email"}
+                    </small>
+                  </span>
+                </label>
+              )}
               <div className="form-actions"><button type="button" className="button quiet" onClick={() => setEditorOpen(false)}>Annuler</button><button type="submit" className="button primary" disabled={saving}>{saving ? "Sauvegarde..." : editingId ? "Enregistrer" : "Ajouter la tache"}</button></div>
             </form>
           </section>
@@ -777,6 +907,7 @@ export default function Home() {
             <div className="detail-grid">
               <div><small>Responsable</small><span className="owner"><span className="avatar">{ownerInitials(peopleById.get(selectedTask.assigneeId || "")?.name || selectedTask.owner)}</span>{peopleById.get(selectedTask.assigneeId || "")?.name || selectedTask.owner}</span></div>
               <div><small>{selectedTask.endDate ? "Periode" : "Date"}</small><strong>{formatFullDate(selectedTask.startDate)}{selectedTask.endDate && selectedTask.endDate !== selectedTask.startDate ? ` -> ${formatFullDate(selectedTask.endDate)}` : ""}</strong></div>
+              <div><small>Duree estimee</small><strong>{formatDuration(selectedTask.estimatedHours)}</strong></div>
             </div>
             <div className="quick-status">
               <span>Avancement</span>
@@ -784,7 +915,7 @@ export default function Home() {
             </div>
             {selectedTask.status === "done" && (
               <div className="completion-box-panel">
-                <button className="button primary" onClick={() => openCompletionNotice(selectedTask)}>Notifier la fin</button>
+                <button className="button primary" onClick={() => openCompletionNotice(selectedTask)}>Choisir qui notifier</button>
                 <p>
                   {selectedTask.completionNotifications.length
                     ? `${selectedTask.completionNotifications.length} notification(s) deja envoyee(s).`
@@ -812,11 +943,11 @@ export default function Home() {
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setNotifyOpen(false)}>
           <section className="modal notify-modal" role="dialog" aria-modal="true" aria-labelledby="notify-title">
             <div className="modal-header">
-              <div><p className="eyebrow">Tache terminee</p><h2 id="notify-title">Notifier la fin</h2></div>
+              <div><p className="eyebrow">Tache terminee</p><h2 id="notify-title">Choisir les destinataires</h2></div>
               <button className="close-button" onClick={() => setNotifyOpen(false)} aria-label="Fermer">×</button>
             </div>
             <form onSubmit={sendCompletionNotice} className="notify-form">
-              <p className="detail-description">Selectionnez les personnes qui doivent recevoir un email pour “{notifyTask.title}”.</p>
+              <p className="detail-description">Selectionnez les personnes qui doivent recevoir un email indiquant clairement que la tache “{notifyTask.title}” est terminee.</p>
               <div className="recipient-list">
                 {notifiablePeople.length ? notifiablePeople.map((person) => {
                   const alreadyNotified = notifyTask.completionNotifications.some((item) => item.personId === person.id);

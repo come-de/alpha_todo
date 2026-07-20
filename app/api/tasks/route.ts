@@ -19,7 +19,7 @@ export async function GET() {
 
 export async function PUT(request: Request) {
   try {
-    const body = (await request.json()) as { tasks?: unknown; notifyAssignments?: boolean };
+    const body = (await request.json()) as { tasks?: unknown; notifyAssignments?: boolean; sendAssignmentEmail?: boolean };
     if (!Array.isArray(body.tasks)) return json({ error: "Invalid task list" }, 400);
 
     const previousTasks = await readTasks();
@@ -31,7 +31,9 @@ export async function PUT(request: Request) {
 
     await writeTasks(tasks);
 
-    if (body.notifyAssignments !== false) {
+    const shouldNotifyAssignments = body.sendAssignmentEmail ?? body.notifyAssignments ?? true;
+
+    if (shouldNotifyAssignments) {
       const people = await readPeople();
       const peopleById = new Map(people.map((person) => [person.id, person]));
       const assignedTasks = tasks.filter((task) => {

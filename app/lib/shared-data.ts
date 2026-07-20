@@ -16,6 +16,7 @@ export type Task = {
   assigneeId: string | null;
   startDate: string;
   endDate: string;
+  estimatedHours: number | null;
   status: Status;
   priority: Priority;
   comments: {
@@ -87,6 +88,12 @@ export function sanitizePerson(raw: Record<string, unknown>, existing?: Person):
 
 export function sanitizeTask(raw: Record<string, unknown>): Task {
   const now = new Date().toISOString();
+  const rawEstimatedHours =
+    typeof raw.estimatedHours === "number"
+      ? raw.estimatedHours
+      : typeof raw.estimatedHours === "string" && raw.estimatedHours.trim()
+        ? Number(raw.estimatedHours)
+        : null;
   return {
     id: cleanText(raw.id) || crypto.randomUUID(),
     title: cleanText(raw.title),
@@ -95,6 +102,10 @@ export function sanitizeTask(raw: Record<string, unknown>): Task {
     assigneeId: cleanText(raw.assigneeId) || null,
     startDate: cleanText(raw.startDate) || new Date().toISOString().slice(0, 10),
     endDate: cleanText(raw.endDate),
+    estimatedHours:
+      typeof rawEstimatedHours === "number" && Number.isFinite(rawEstimatedHours) && rawEstimatedHours > 0
+        ? rawEstimatedHours
+        : null,
     status: isStatus(raw.status) ? raw.status : "todo",
     priority: isPriority(raw.priority) ? raw.priority : "medium",
     comments: Array.isArray(raw.comments)
@@ -176,6 +187,15 @@ function escapeHtml(value: string) {
     .replaceAll('"', "&quot;");
 }
 
+function formatDuration(hours: number | null) {
+  if (!hours) return "non renseignee";
+  const totalMinutes = Math.round(hours * 60);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const wholeHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes ? `${wholeHours} h ${minutes} min` : `${wholeHours} h`;
+}
+
 async function sendEmail(to: string, subject: string, html: string) {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.ASSIGNMENT_FROM_EMAIL;
@@ -221,6 +241,7 @@ export async function notifyAssignment(task: Task, person: Person, openTasks: Ta
     `<h2>${escapeHtml(task.title)}</h2>
      <p>${escapeHtml(task.description || "Aucune description.")}</p>
      <p><strong>Responsable :</strong> ${escapeHtml(task.owner)}</p>
+     <p><strong>Duree estimee :</strong> ${escapeHtml(formatDuration(task.estimatedHours))}</p>
      <p><strong>Priorite :</strong> ${escapeHtml(task.priority)}</p>
      ${reminders}
      ${link}`,
@@ -229,9 +250,14 @@ export async function notifyAssignment(task: Task, person: Person, openTasks: Ta
 
 export async function notifyCompletion(task: Task, people: Person[]) {
   const link = taskUrl() ? `<p><a href="${escapeHtml(taskUrl())}">Ouvrir le suivi des taches</a></p>` : "";
-  const html = `<h2>Tache terminee : ${escapeHtml(task.title)}</h2>
+  const html = `<h1>La tache est terminee</h1>
+    <p>Bonjour,</p>
+    <p>La tache suivante vient d'etre marquee comme terminee :</p>
+    <h2>${escapeHtml(task.title)}</h2>
     <p>${escapeHtml(task.description || "Aucune description.")}</p>
+    <p><strong>Statut :</strong> terminee</p>
     <p><strong>Responsable :</strong> ${escapeHtml(task.owner)}</p>
+    <p><strong>Duree estimee :</strong> ${escapeHtml(formatDuration(task.estimatedHours))}</p>
     <p><strong>Periode :</strong> ${escapeHtml(task.endDate || task.startDate)}</p>
     <p><strong>Priorite :</strong> ${escapeHtml(task.priority)}</p>
     ${link}`;
@@ -239,7 +265,7 @@ export async function notifyCompletion(task: Task, people: Person[]) {
   const results = await Promise.all(
     people.map(async (person) => ({
       personId: person.id,
-      ...(await sendEmail(person.email, `Tache terminee : ${task.title}`, html)),
+      ...(await sendEmail(person.email, `La tache est terminee : ${task.title}`, html)),
     })),
   );
 
