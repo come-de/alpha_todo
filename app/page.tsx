@@ -123,7 +123,7 @@ function daysFromToday(date: string) {
 }
 
 function isLate(task: Task) {
-  return task.status !== "done" && daysFromToday(task.endDate || task.startDate) < 0;
+  return task.status !== "done" && Boolean(task.endDate) && daysFromToday(task.endDate) < 0;
 }
 
 function formatDate(date: string) {
@@ -147,7 +147,7 @@ function naturalDateLabel(task: Task) {
   const date = formatDate(target);
 
   if (task.status === "done") return task.endDate ? `Terminee le ${date}` : "Terminee";
-  if (delta < 0) return `En retard de ${Math.abs(delta)} j`;
+  if (task.endDate && delta < 0) return `En retard de ${Math.abs(delta)} j`;
   if (delta === 0) return "Aujourd'hui";
   if (delta === 1) return "Demain";
   if (delta <= 7) return `Dans ${delta} jours`;
@@ -639,29 +639,6 @@ export default function Home() {
       </header>
 
       <section className="content">
-        <div className="hero-row">
-          <div>
-            <p className="eyebrow">Vue partagee</p>
-            <h1>Un seul tableau pour suivre les taches de l&apos;equipe.</h1>
-            <p className="hero-copy">
-              Les personnes peuvent etre notifiees a l&apos;assignation et quand une tache terminee
-              doit etre partagee. Les emails restent masques dans l&apos;interface.
-            </p>
-          </div>
-          <div className="backup-menu">
-            <button className="button quiet" onClick={() => { void loadTasks(); void loadPeople(); }} disabled={saving}>↻ Actualiser</button>
-            <button className="button quiet" onClick={exportTasks} disabled={!tasks.length}>⇩ Exporter</button>
-            <button className="button quiet" onClick={() => importRef.current?.click()} disabled={saving}>⇧ Importer</button>
-            <input
-              ref={importRef}
-              className="sr-only"
-              type="file"
-              accept="application/json"
-              onChange={(event) => importTasks(event.target.files?.[0])}
-            />
-          </div>
-        </div>
-
         <div className="stats-grid" aria-label="Resume des taches">
           <button className={`stat-card neutral ${statusFilter === "all" ? "active" : ""}`} onClick={() => setStatusFilter("all")}>
             <span className="stat-icon">≡</span><span><strong>{stats.active}</strong><small>Actives</small></span>
@@ -704,6 +681,16 @@ export default function Home() {
               <button className="density-toggle" onClick={() => setDensity(density === "compact" ? "comfortable" : "compact")} title="Changer la densite d'affichage">
                 {density === "compact" ? "Compact" : "Confort"}
               </button>
+              <button className="mini-action" onClick={() => { void loadTasks(); void loadPeople(); }} disabled={saving}>↻</button>
+              <button className="mini-action" onClick={exportTasks} disabled={!tasks.length}>⇩</button>
+              <button className="mini-action" onClick={() => importRef.current?.click()} disabled={saving}>⇧</button>
+              <input
+                ref={importRef}
+                className="sr-only"
+                type="file"
+                accept="application/json"
+                onChange={(event) => importTasks(event.target.files?.[0])}
+              />
             </div>
           </div>
 
