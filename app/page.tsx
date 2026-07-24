@@ -5,6 +5,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 type Status = "todo" | "progress" | "done";
 type Priority = "low" | "medium" | "high";
 type Density = "compact" | "comfortable";
+type AppMode = "tasks" | "recurring";
 type ViewMode = "list" | "matrix";
 type DurationBucket = "short" | "medium" | "long" | "unset";
 
@@ -36,6 +37,17 @@ type Task = {
   createdAt: string;
 };
 
+type RecurringTask = {
+  id: string;
+  title: string;
+  description: string;
+  owner: string;
+  assigneeId: string | null;
+  estimatedHours: number | null;
+  priority: Priority;
+  createdAt: string;
+};
+
 type Person = {
   id: string;
   name: string;
@@ -52,6 +64,7 @@ type PersonDraft = {
 };
 
 type TaskDraft = Omit<Task, "id" | "comments" | "completionNotifications" | "createdAt">;
+type RecurringDraft = Omit<RecurringTask, "id" | "createdAt">;
 
 const AUTHOR_KEY = "petit-suivi-auteur-v2";
 const DENSITY_KEY = "petit-suivi-densite-v2";
@@ -73,6 +86,15 @@ const emptyPersonDraft: PersonDraft = {
   name: "",
   email: "",
   active: true,
+};
+
+const emptyRecurringDraft: RecurringDraft = {
+  title: "",
+  description: "",
+  owner: "",
+  assigneeId: null,
+  estimatedHours: null,
+  priority: "medium",
 };
 
 const statusLabels: Record<Status, string> = {
@@ -220,6 +242,25 @@ function normalizeTask(raw: Partial<Task>): Task {
   };
 }
 
+function normalizeRecurringTask(raw: Partial<RecurringTask>): RecurringTask {
+  return {
+    id: raw.id || uid("recurring"),
+    title: raw.title || "",
+    description: raw.description || "",
+    owner: raw.owner || "",
+    assigneeId: raw.assigneeId || null,
+    estimatedHours:
+      typeof raw.estimatedHours === "number" && Number.isFinite(raw.estimatedHours) && raw.estimatedHours > 0
+        ? raw.estimatedHours
+        : null,
+    priority:
+      raw.priority === "low" || raw.priority === "high" || raw.priority === "medium"
+        ? raw.priority
+        : "medium",
+    createdAt: raw.createdAt || new Date().toISOString(),
+  };
+}
+
 function normalizePerson(raw: Partial<Person>): Person {
   return {
     id: raw.id || uid("person"),
@@ -232,6 +273,7 @@ function normalizePerson(raw: Partial<Person>): Person {
 
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [recurringTasks, setRecurringTasks] = useState<RecurringTask[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -241,6 +283,7 @@ export default function Home() {
   const [statusFilter, setStatusFilter] = useState<"all" | Status | "late">("all");
   const [priorityFilter, setPriorityFilter] = useState<"all" | Priority>("all");
   const [ownerFilter, setOwnerFilter] = useState("all");
+  const [appMode, setAppMode] = useState<AppMode>("tasks");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [density, setDensity] = useState<Density>(() =>
     typeof window === "undefined" || localStorage.getItem(DENSITY_KEY) !== "comfortable"
@@ -252,9 +295,12 @@ export default function Home() {
   );
   const [editorOpen, setEditorOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
+  const [recurringOpen, setRecurringOpen] = useState(false);
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingRecurringId, setEditingRecurringId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
+  const [recurringDraft, setRecurringDraft] = useState<RecurringDraft>(emptyRecurringDraft);
   const [sendAssignmentEmail, setSendAssignmentEmail] = useState(true);
   const [personDraft, setPersonDraft] = useState<PersonDraft>(emptyPersonDraft);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -290,21 +336,36 @@ export default function Home() {
     }
   }, []);
 
+  const loadRecurringTasks = useCallback(async () => {
+    try {
+      const response = await fetch("/api/recurring-tasks", { cache: "no-store" });
+      if (!response.ok) throw new Error("load-recurring-failed");
+      const data = (await response.json()) as { recurringTasks?: Partial<RecurringTask>[] };
+      setRecurringTasks(
+        Array.isArray(data.recurringTasks) ? data.recurringTasks.map(normalizeRecurringTask) : [],
+      );
+    } catch {
+      setToast("Modeles recurrents indisponibles");
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadTasks();
       void loadPeople();
+      void loadRecurringTasks();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadTasks, loadPeople]);
+  }, [loadTasks, loadPeople, loadRecurringTasks]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       void loadTasks(true);
       void loadPeople();
+      void loadRecurringTasks();
     }, 30000);
     return () => window.clearInterval(timer);
-  }, [loadTasks, loadPeople]);
+  }, [loadTasks, loadPeople, loadRecurringTasks]);
 
   useEffect(() => {
     if (authorName.trim()) localStorage.setItem(AUTHOR_KEY, authorName.trim());
@@ -328,10 +389,11 @@ export default function Home() {
       Array.from(
         new Set([
           ...tasks.map((task) => task.owner).filter(Boolean),
+          ...recurringTasks.map((task) => task.owner).filter(Boolean),
           ...people.map((person) => person.name).filter(Boolean),
         ]),
       ).sort(),
-    [tasks, people],
+    [tasks, recurringTasks, people],
   );
 
   const stats = useMemo(
@@ -406,6 +468,30 @@ export default function Home() {
     }
   }
 
+  async function saveRecurringTasks(nextRecurringTasks: RecurringTask[], message: string) {
+    setSaving(true);
+    setSyncError("");
+    setRecurringTasks(nextRecurringTasks);
+    try {
+      const response = await fetch("/api/recurring-tasks", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recurringTasks: nextRecurringTasks }),
+      });
+      if (!response.ok) throw new Error("save-recurring-failed");
+      const data = (await response.json()) as { recurringTasks?: Partial<RecurringTask>[] };
+      setRecurringTasks(
+        Array.isArray(data.recurringTasks) ? data.recurringTasks.map(normalizeRecurringTask) : [],
+      );
+      setToast(message);
+    } catch {
+      setSyncError("Sauvegarde impossible, rechargez la page avant de continuer");
+      setToast("Modele non sauvegarde");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function savePeople(nextPeople: PersonDraft[], message: string) {
     setSaving(true);
     try {
@@ -457,6 +543,89 @@ export default function Home() {
       owner: person?.name || draft.owner,
     });
     setSendAssignmentEmail(Boolean(person?.hasEmail));
+  }
+
+  function openNewRecurringTask() {
+    setEditingRecurringId(null);
+    setRecurringDraft(emptyRecurringDraft);
+    setRecurringOpen(true);
+  }
+
+  function openEditRecurringTask(task: RecurringTask) {
+    setEditingRecurringId(task.id);
+    setRecurringDraft({
+      title: task.title,
+      description: task.description,
+      owner: task.owner,
+      assigneeId: task.assigneeId,
+      estimatedHours: task.estimatedHours,
+      priority: task.priority,
+    });
+    setRecurringOpen(true);
+  }
+
+  function selectRecurringAssignee(personId: string) {
+    const person = peopleById.get(personId);
+    setRecurringDraft({
+      ...recurringDraft,
+      assigneeId: person?.id || null,
+      owner: person?.name || recurringDraft.owner,
+    });
+  }
+
+  async function saveRecurringTask(event: FormEvent) {
+    event.preventDefault();
+    if (!recurringDraft.title.trim() || !recurringDraft.owner.trim() || saving) return;
+    const cleanDraft = {
+      ...recurringDraft,
+      title: recurringDraft.title.trim(),
+      description: recurringDraft.description.trim(),
+      owner: recurringDraft.owner.trim(),
+      estimatedHours:
+        typeof recurringDraft.estimatedHours === "number" &&
+        Number.isFinite(recurringDraft.estimatedHours) &&
+        recurringDraft.estimatedHours > 0
+          ? recurringDraft.estimatedHours
+          : null,
+    };
+    if (editingRecurringId) {
+      await saveRecurringTasks(
+        recurringTasks.map((task) => (task.id === editingRecurringId ? { ...task, ...cleanDraft } : task)),
+        "Modele recurrent mis a jour",
+      );
+    } else {
+      await saveRecurringTasks(
+        [{ ...cleanDraft, id: uid("recurring"), createdAt: new Date().toISOString() }, ...recurringTasks],
+        "Modele recurrent ajoute",
+      );
+    }
+    setRecurringOpen(false);
+  }
+
+  function createTaskFromRecurring(task: RecurringTask) {
+    setEditingId(null);
+    setDraft({
+      title: task.title,
+      description: task.description,
+      owner: task.owner,
+      assigneeId: task.assigneeId,
+      startDate: new Date().toISOString().slice(0, 10),
+      endDate: "",
+      estimatedHours: task.estimatedHours,
+      status: "todo",
+      priority: task.priority,
+    });
+    const assignee = task.assigneeId ? peopleById.get(task.assigneeId) : null;
+    setSendAssignmentEmail(Boolean(assignee?.hasEmail));
+    setEditorOpen(true);
+  }
+
+  async function deleteRecurringTask(taskId: string) {
+    if (!window.confirm("Supprimer ce modele recurrent ?")) return;
+    await saveRecurringTasks(
+      recurringTasks.filter((task) => task.id !== taskId),
+      "Modele recurrent supprime",
+    );
   }
 
   async function saveTask(event: FormEvent) {
@@ -632,14 +801,27 @@ export default function Home() {
           <button className="button quiet" onClick={() => openPerson()} disabled={saving}>
             Personnes
           </button>
-          <button className="button primary" onClick={openNewTask} disabled={saving}>
-            <span aria-hidden="true">＋</span> Nouvelle tache
+          <button
+            className="button primary"
+            onClick={appMode === "recurring" ? openNewRecurringTask : openNewTask}
+            disabled={saving}
+          >
+            <span aria-hidden="true">＋</span> {appMode === "recurring" ? "Nouveau modele" : "Nouvelle tache"}
           </button>
         </div>
       </header>
 
       <section className="content">
-        <div className="stats-grid" aria-label="Resume des taches">
+        <div className="main-tabs" role="group" aria-label="Choisir le type de suivi">
+          <button className={appMode === "tasks" ? "active" : ""} onClick={() => setAppMode("tasks")}>
+            Taches
+          </button>
+          <button className={appMode === "recurring" ? "active" : ""} onClick={() => setAppMode("recurring")}>
+            Recurrences <span>{recurringTasks.length}</span>
+          </button>
+        </div>
+
+        {appMode === "tasks" && <div className="stats-grid" aria-label="Resume des taches">
           <button className={`stat-card neutral ${statusFilter === "all" ? "active" : ""}`} onClick={() => setStatusFilter("all")}>
             <span className="stat-icon">≡</span><span><strong>{stats.active}</strong><small>Actives</small></span>
           </button>
@@ -655,9 +837,9 @@ export default function Home() {
           <button className={`stat-card green ${statusFilter === "done" ? "active" : ""}`} onClick={() => setStatusFilter("done")}>
             <span className="stat-icon">✓</span><span><strong>{stats.done}</strong><small>Terminees</small></span>
           </button>
-        </div>
+        </div>}
 
-        <section className="task-panel">
+        {appMode === "tasks" ? <section className="task-panel">
           <div className="panel-heading">
             <div>
               <h2>Liste partagee</h2>
@@ -808,6 +990,54 @@ export default function Home() {
           </div>
           )}
         </section>
+        : <section className="task-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Modeles recurrents</h2>
+              <p>
+                {`${recurringTasks.length} modele${recurringTasks.length > 1 ? "s" : ""} disponible${recurringTasks.length > 1 ? "s" : ""}`}
+              </p>
+            </div>
+            <div className="filters">
+              <button className="button quiet" onClick={() => { void loadRecurringTasks(); }} disabled={saving}>↻ Actualiser</button>
+              <button className="button primary" onClick={openNewRecurringTask} disabled={saving}>＋ Nouveau modele</button>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <div className="recurring-table table-head" aria-hidden="true">
+              <span>Modele</span><span>Responsable</span><span>Duree</span><span>Priorite</span><span>Actions</span>
+            </div>
+            {recurringTasks.length ? recurringTasks
+              .slice()
+              .sort((a, b) => priorityRank[a.priority] - priorityRank[b.priority] || a.title.localeCompare(b.title, "fr"))
+              .map((task) => {
+                const assignee = task.assigneeId ? peopleById.get(task.assigneeId) : null;
+                return (
+                  <article className={`recurring-table task-row recurring-row priority-${task.priority}`} key={task.id}>
+                    <button className="task-main" onClick={() => openEditRecurringTask(task)} aria-label={`Modifier le modele ${task.title}`}>
+                      <span className="recurring-icon" aria-hidden="true">↻</span>
+                      <span><strong>{task.title}</strong><small>{task.description || "Aucune description"}</small></span>
+                    </button>
+                    <div className="owner"><span className="avatar">{ownerInitials(assignee?.name || task.owner)}</span><span>{assignee?.name || task.owner}</span></div>
+                    <span className="duration-pill">{formatDuration(task.estimatedHours)}</span>
+                    <span className={`priority-pill priority-${task.priority}`}>{priorityLabels[task.priority]}</span>
+                    <div className="row-actions">
+                      <button className="button primary" onClick={() => createTaskFromRecurring(task)} disabled={saving}>Creer une tache</button>
+                      <button className="icon-button" onClick={() => openEditRecurringTask(task)} aria-label={`Modifier ${task.title}`}>•••</button>
+                      <button className="icon-button danger-icon" onClick={() => deleteRecurringTask(task.id)} aria-label={`Supprimer ${task.title}`}>×</button>
+                    </div>
+                  </article>
+                );
+              }) : (
+              <div className="empty-state">
+                <span>↻</span>
+                <h3>Aucun modele recurrent</h3>
+                <p>Creez un modele pour refaire rapidement les taches qui reviennent.</p>
+                <button className="button primary" onClick={openNewRecurringTask}>Creer le premier modele</button>
+              </div>
+            )}
+          </div>
+        </section>}
       </section>
 
       {editorOpen && (
@@ -849,6 +1079,33 @@ export default function Home() {
                 </label>
               )}
               <div className="form-actions"><button type="button" className="button quiet" onClick={() => setEditorOpen(false)}>Annuler</button><button type="submit" className="button primary" disabled={saving}>{saving ? "Sauvegarde..." : editingId ? "Enregistrer" : "Ajouter la tache"}</button></div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {recurringOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setRecurringOpen(false)}>
+          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="recurring-title">
+            <div className="modal-header">
+              <div><p className="eyebrow">{editingRecurringId ? "Modele recurrent" : "Nouveau modele"}</p><h2 id="recurring-title">{editingRecurringId ? "Modifier le modele" : "Creer un modele recurrent"}</h2></div>
+              <button className="close-button" onClick={() => setRecurringOpen(false)} aria-label="Fermer">×</button>
+            </div>
+            <form onSubmit={saveRecurringTask} className="task-form">
+              <label className="field full"><span>Tache type *</span><input autoFocus required value={recurringDraft.title} onChange={(event) => setRecurringDraft({ ...recurringDraft, title: event.target.value })} placeholder="Ex. Envoyer le bilan hebdomadaire" /></label>
+              <label className="field full"><span>Description</span><textarea rows={3} value={recurringDraft.description} onChange={(event) => setRecurringDraft({ ...recurringDraft, description: event.target.value })} placeholder="Informations reprises quand on cree une tache..." /></label>
+              <label className="field">
+                <span>Assigner a une personne</span>
+                <select value={recurringDraft.assigneeId || ""} onChange={(event) => selectRecurringAssignee(event.target.value)}>
+                  <option value="">Aucune personne enregistree</option>
+                  {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}{person.hasEmail ? " - email enregistre" : " - sans email"}</option>)}
+                </select>
+              </label>
+              <label className="field"><span>Responsable *</span><input required list="recurring-owners" value={recurringDraft.owner} onChange={(event) => setRecurringDraft({ ...recurringDraft, owner: event.target.value, assigneeId: null })} placeholder="Prenom ou equipe" /><datalist id="recurring-owners">{owners.map((owner) => <option key={owner} value={owner} />)}</datalist></label>
+              <label className="field"><span>Priorite</span><select value={recurringDraft.priority} onChange={(event) => setRecurringDraft({ ...recurringDraft, priority: event.target.value as Priority })}><option value="low">Basse</option><option value="medium">Moyenne</option><option value="high">Haute</option></select></label>
+              <label className="field"><span>Duree estimee <small>(heures)</small></span><input type="number" min="0" step="0.25" value={recurringDraft.estimatedHours ?? ""} onChange={(event) => setRecurringDraft({ ...recurringDraft, estimatedHours: event.target.value ? Number(event.target.value) : null })} placeholder="Ex. 1.5" /></label>
+              <div className="form-note">Les dates ne sont pas stockees dans le modele. Elles seront choisies au moment de creer la vraie tache.</div>
+              <div className="form-actions"><button type="button" className="button quiet" onClick={() => setRecurringOpen(false)}>Annuler</button><button type="submit" className="button primary" disabled={saving}>{saving ? "Sauvegarde..." : editingRecurringId ? "Enregistrer" : "Ajouter le modele"}</button></div>
             </form>
           </section>
         </div>

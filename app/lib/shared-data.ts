@@ -29,6 +29,17 @@ export type Task = {
   createdAt: string;
 };
 
+export type RecurringTask = {
+  id: string;
+  title: string;
+  description: string;
+  owner: string;
+  assigneeId: string | null;
+  estimatedHours: number | null;
+  priority: Priority;
+  createdAt: string;
+};
+
 export type Person = {
   id: string;
   name: string;
@@ -44,10 +55,12 @@ export type PublicPerson = Omit<Person, "email"> & {
 const STORE_NAME = "task-tracker";
 export const TASKS_KEY = "tasks.json";
 export const PEOPLE_KEY = "people.json";
+export const RECURRING_TASKS_KEY = "recurring-tasks.json";
 
 const memory = globalThis as typeof globalThis & {
   __petitSuiviTasks?: Task[];
   __petitSuiviPeople?: Person[];
+  __petitSuiviRecurringTasks?: RecurringTask[];
 };
 
 export function taskStore() {
@@ -132,6 +145,28 @@ export function sanitizeTask(raw: Record<string, unknown>): Task {
   };
 }
 
+export function sanitizeRecurringTask(raw: Record<string, unknown>): RecurringTask {
+  const rawEstimatedHours =
+    typeof raw.estimatedHours === "number"
+      ? raw.estimatedHours
+      : typeof raw.estimatedHours === "string" && raw.estimatedHours.trim()
+        ? Number(raw.estimatedHours)
+        : null;
+  return {
+    id: cleanText(raw.id) || crypto.randomUUID(),
+    title: cleanText(raw.title),
+    description: cleanText(raw.description),
+    owner: cleanText(raw.owner),
+    assigneeId: cleanText(raw.assigneeId) || null,
+    estimatedHours:
+      typeof rawEstimatedHours === "number" && Number.isFinite(rawEstimatedHours) && rawEstimatedHours > 0
+        ? rawEstimatedHours
+        : null,
+    priority: isPriority(raw.priority) ? raw.priority : "medium",
+    createdAt: cleanText(raw.createdAt) || new Date().toISOString(),
+  };
+}
+
 export async function readTasks() {
   try {
     const store = taskStore();
@@ -167,6 +202,30 @@ export async function readPeople() {
       : [];
   } catch {
     return memory.__petitSuiviPeople ?? [];
+  }
+}
+
+export async function readRecurringTasks() {
+  try {
+    const store = taskStore();
+    const recurringTasks = await store.get(RECURRING_TASKS_KEY, { type: "json", consistency: "strong" });
+    return Array.isArray(recurringTasks)
+      ? recurringTasks
+          .filter((task): task is Record<string, unknown> => Boolean(task && typeof task === "object"))
+          .map(sanitizeRecurringTask)
+          .filter((task) => task.title && task.owner)
+      : [];
+  } catch {
+    return memory.__petitSuiviRecurringTasks ?? [];
+  }
+}
+
+export async function writeRecurringTasks(recurringTasks: RecurringTask[]) {
+  try {
+    const store = taskStore();
+    await store.setJSON(RECURRING_TASKS_KEY, recurringTasks);
+  } catch {
+    memory.__petitSuiviRecurringTasks = recurringTasks;
   }
 }
 
