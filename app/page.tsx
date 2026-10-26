@@ -812,6 +812,28 @@ export default function Home() {
       </header>
 
       <section className="content">
+        <div className="showcase">
+          <div className="showcase-copy">
+            <span className="showcase-kicker"><span aria-hidden="true">✳</span> Le studio des choses à faire</span>
+            <h1>On avance mieux <em>ensemble.</em></h1>
+            <p>Une vue claire, un peu d&apos;énergie et toutes vos idées au même endroit.</p>
+            <div className="showcase-tags" aria-label="Fonctions principales">
+              <span>Organiser</span><span>Partager</span><span>Avancer</span>
+            </div>
+          </div>
+          <div className="showcase-art" aria-hidden="true">
+            <span className="showcase-orbit orbit-one"></span>
+            <span className="showcase-orbit orbit-two"></span>
+            <span className="showcase-star">✳</span>
+            <span className="showcase-spark">✦</span>
+            <div className="showcase-ticket">
+              <small>EN MOUVEMENT</small>
+              <strong>{stats.active}</strong>
+              <span>tâche{stats.active > 1 ? "s" : ""} active{stats.active > 1 ? "s" : ""}</span>
+            </div>
+          </div>
+        </div>
+
         <div className="main-tabs" role="group" aria-label="Choisir le type de suivi">
           <button className={appMode === "tasks" ? "active" : ""} onClick={() => setAppMode("tasks")}>
             Taches
