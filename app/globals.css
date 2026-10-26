@@ -1,25 +1,25 @@
 @import "tailwindcss";
 
 :root {
-  --ink: #102235;
-  --muted: #5f7589;
-  --line: #d5e7ef;
+  --ink: #19152e;
+  --muted: #706b86;
+  --line: #e4def2;
   --paper: #ffffff;
-  --wash: #f7fffc;
-  --soft: #f4fbfc;
-  --blue-main: #0ea5e9;
-  --blue-dark: #075985;
-  --blue-title: #0f3a4a;
-  --blue-pale: #e0f7ff;
-  --green: #10b981;
-  --green-dark: #047857;
-  --green-pale: #ecfdf5;
-  --amber: #b7791f;
-  --amber-pale: #fff7e6;
-  --red: #be185d;
-  --red-pale: #fff1f7;
-  --violet: #0ea5e9;
-  --violet-pale: #e0f7ff;
+  --wash: #f7f3ff;
+  --soft: #f5f0ff;
+  --blue-main: #7655f6;
+  --blue-dark: #5235ca;
+  --blue-title: #211943;
+  --blue-pale: #eee9ff;
+  --green: #a5cf32;
+  --green-dark: #526d0c;
+  --green-pale: #f2f8d9;
+  --amber: #c45b33;
+  --amber-pale: #fff0e9;
+  --red: #d94972;
+  --red-pale: #ffedf2;
+  --violet: #e264a6;
+  --violet-pale: #ffedf6;
 }
 
 * { box-sizing: border-box; }
@@ -317,4 +317,136 @@ h1 { max-width: 780px; margin: 0; font-size: clamp(29px, 3.2vw, 42px); line-heig
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+
+/* Bright, playful visual refresh */
+:root {
+  --lime: #d8fa57;
+  --plum: #211943;
+  --lilac: #eee9ff;
+}
+html { background: #f7f3ff; }
+body {
+  background:
+    radial-gradient(ellipse at 92% 2%, rgba(216,250,87,.32), transparent 25rem),
+    radial-gradient(ellipse at 4% 8%, rgba(226,100,166,.14), transparent 30rem),
+    linear-gradient(180deg, #f1edff 0, #faf8ff 360px, #f7f3ff 100%);
+}
+.topbar {
+  min-height: 68px;
+  background: rgba(33,25,67,.97);
+  border-bottom: 1px solid rgba(255,255,255,.12);
+  box-shadow: 0 10px 30px rgba(33,25,67,.16);
+}
+.brand-mark {
+  color: var(--plum);
+  background: var(--lime);
+  box-shadow: 0 0 0 5px rgba(216,250,87,.12);
+}
+.brand span { color: #fff; }
+.brand small, .storage-note { color: #c8c1e2; }
+.storage-note span { color: var(--lime); }
+.storage-note.error, .storage-note.error span { color: #ff91ae; }
+.button { border-radius: 11px; }
+.button.primary {
+  color: var(--plum);
+  background: var(--lime);
+  box-shadow: 0 5px 16px rgba(216,250,87,.23);
+}
+.button.primary:hover:not(:disabled) { background: #e2ff7b; }
+.button.quiet {
+  background: rgba(255,255,255,.08);
+  border-color: rgba(255,255,255,.19);
+  color: #f7f4ff;
+}
+.button.quiet:hover:not(:disabled) { background: rgba(255,255,255,.16); border-color: #aaa0d1; }
+.button.danger { background: #ffedf2; color: #b32e56; border-color: #ffd0dd; }
+.content { padding-top: 26px; }
+.hero-row { margin-bottom: 24px; }
+.eyebrow { color: #9b45bc; letter-spacing: .16em; }
+h1 { color: var(--plum); letter-spacing: -.045em; }
+.hero-copy { color: #716b85; }
+.main-tabs button, .stat-card, .task-panel { border-radius: 15px; }
+.main-tabs button { padding: 8px 14px; border-color: #e5def4; }
+.main-tabs button.active, .view-tabs button.active {
+  background: var(--plum);
+  color: white;
+  box-shadow: 0 7px 18px rgba(33,25,67,.2);
+}
+.stat-card {
+  min-height: 66px;
+  padding: 12px 14px;
+  border-color: #e6dff3;
+  background: rgba(255,255,255,.84);
+  box-shadow: 0 5px 16px rgba(62,42,110,.045);
+}
+.stat-card:hover, .stat-card.active {
+  border-color: #b7a6f6;
+  box-shadow: 0 10px 24px rgba(101,75,186,.13);
+}
+.stat-icon { border-radius: 9px; }
+.stat-card.blue { color: #6645e8; }
+.stat-card.blue .stat-icon { background: #eee9ff; }
+.stat-card.green { color: #526d0c; }
+.stat-card.green .stat-icon { background: #f2f8d9; }
+.stat-card.violet { color: #c84991; }
+.stat-card.violet .stat-icon { background: #ffedf6; }
+.stat-card.amber { color: #b94f2b; }
+.stat-card.red { color: #c6315c; }
+.task-panel {
+  border-color: #e4def2;
+  background: rgba(255,255,255,.91);
+  box-shadow: 0 18px 48px rgba(56,38,94,.08);
+}
+.panel-heading h2 { color: var(--plum); }
+.search-box, .filters select, .density-toggle, .mini-action {
+  border-radius: 10px;
+  border-color: #e4def2;
+  background-color: #fbfaff;
+}
+.search-box:focus-within { border-color: #9f89f4; box-shadow: 0 0 0 3px rgba(118,85,246,.12); }
+.owner-strip button, .view-tabs button { border-radius: 999px; }
+.owner-strip button.active { background: #f2f8d9; border-color: #d3e99a; color: #526d0c; }
+.status-tabs button:hover, .status-tabs button.active { background: #eee9ff; color: #5235ca; }
+.table-head { background: #f8f5ff; }
+.task-row { border-color: #f0ebf7; }
+.task-row:hover { background: #fcfbff; }
+.task-main strong { color: #211943; }
+.task-main strong:hover { color: #7655f6; }
+.avatar { color: #5235ca; background: #eee9ff; border-color: #d6cbff; }
+.status-progress { color: #5235ca; background: #eee9ff; }
+.status-todo { color: #a44e21; background: #fff0e9; }
+.status-done { color: #526d0c; background: #f2f8d9; }
+.priority-high { color: #b92f61; background: #ffedf2; }
+.priority-medium { color: #a44e21; background: #fff0e9; }
+.priority-low { color: #706b86; background: #f2eff8; }
+.duration-pill { color: #5235ca; background: #eee9ff; }
+.note-preview { border-color: #e3d9f2; background: #faf8ff; }
+.note-preview.has-note { color: #211943; }
+.icon-button:hover { background: #eee9ff; color: #5235ca; }
+.empty-state > span { border-radius: 15px; background: #f2f8d9; color: #526d0c; }
+.modal-backdrop, .drawer-backdrop { background: rgba(29,21,58,.48); backdrop-filter: blur(7px); }
+.modal, .drawer {
+  border: 1px solid #e7e0f2;
+  box-shadow: 0 28px 90px rgba(29,21,58,.28);
+}
+.modal, .drawer { background: #fff; }
+.modal-header h2, .drawer h2 { color: var(--plum); }
+.close-button { border-radius: 11px; background: #f5f0ff; }
+.field input, .field select, .field textarea, .comment-form textarea, .author-field input { border-radius: 10px; background: #fbfaff; }
+.field input:focus, .field select:focus, .field textarea:focus, .comment-form textarea:focus, .author-field input:focus {
+  border-color: #7655f6;
+  outline-color: rgba(118,85,246,.14);
+}
+.detail-grid, .quick-status > div { border-radius: 13px; background: #f8f5ff; }
+.quick-status button.active { color: #5235ca; }
+.drawer { border-radius: 20px 0 0 20px; }
+.toast { background: var(--plum); box-shadow: 0 12px 34px rgba(33,25,67,.28); }
+.toast span { color: var(--plum); background: var(--lime); }
+::selection { color: #211943; background: #d8fa57; }
+@media (max-width: 720px) {
+  .topbar { min-height: 0; }
+  .button.quiet { background: rgba(255,255,255,.08); color: #f7f4ff; }
+  .drawer { border-radius: 20px 20px 0 0; }
 }
